@@ -1,15 +1,9 @@
-name: Test C++ Helloworld Distroless
+name: Test C++13.2 Helloworld Distroless
 
 on:
   workflow_dispatch:
   push:
-    paths:
-      - "examples/helloworld-g++13.2-distroless/**"
-      - ".github/workflows/test-helloworld-g++13.2-distroless.yaml"
   pull_request:
-    paths:
-      - "examples/helloworld-g++13.2-distroless/**"
-      - ".github/workflows/test-helloworld-g++13.2-distroless.yaml"
 
 jobs:
   build-benchmark-test:
