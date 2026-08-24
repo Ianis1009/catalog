@@ -51,4 +51,3 @@ jobs:
         working-directory: examples/helloworld-g++13.2-distroless
         run: |
           kraft run --rm -M 128M
-          
