@@ -1,0 +1,40 @@
+name: Test C++ 13.2 Helloworld Distroless
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "examples/helloworld-g++13.2-distroless/**"
+      - ".github/workflows/test-helloworld-g++13.2-distroless.yaml"
+  pull_request:
+    paths:
+      - "examples/helloworld-g++13.2-distroless/**"
+      - ".github/workflows/test-helloworld-g++13.2-distroless.yaml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install KraftKit
+        run: |
+          curl -sSfL https://get.kraftkit.sh | \
+            sudo DEBIAN_FRONTEND=noninteractive sh -s -- -y
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86
+
+      - name: Build Unikernel
+        working-directory: examples/helloworld-g++13.2-distroless
+        run: |
+          kraft build --plat qemu --arch x86_64 .
+
+      - name: Run Unikernel
+        working-directory: examples/helloworld-g++13.2-distroless
+        run: |
+          kraft run --rm --plat qemu --arch x86_64 -M 128M .
