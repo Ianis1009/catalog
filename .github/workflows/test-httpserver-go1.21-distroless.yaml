@@ -1,0 +1,77 @@
+name: Test HTTP Server Go 1.21 Distroless
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "examples/httpserver-go1.21-distroless/**"
+      - ".github/workflows/test-httpserver-go1.21-distroless.yaml"
+  pull_request:
+    paths:
+      - "examples/httpserver-go1.21-distroless/**"
+
+jobs:
+  build-benchmark-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install KraftKit
+        run: |
+          curl -sSfL https://get.kraftkit.sh | sudo DEBIAN_FRONTEND=noninteractive sh -s -- -y
+
+      - name: Build Unikernel
+        working-directory: examples/httpserver-go1.21-distroless
+        run: |
+          kraft build --plat qemu --arch x86_64 .
+
+      - name: Measure RootFS Size
+        working-directory: examples/httpserver-go1.21-distroless
+        run: |
+          du -sh .unikraft/build/ || true
+          find .unikraft/build/ -type f -name "*.cpio" -exec du -h {} + || true
+          find .unikraft/build/ -type f -name "*.img" -exec du -h {} + || true
+
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: examples/httpserver-go1.21-distroless
+          format: table
+          exit-code: "0"
+          severity: CRITICAL,HIGH
+
+      - name: Install QEMU and Grant Permissions
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86
+          sudo chmod 666 /dev/kvm
+
+      - name: Run and Validate HTTP Server
+        working-directory: examples/httpserver-go1.21-distroless
+        run: |
+          kraft run --rm \
+            -p 8080:8080 \
+            --plat qemu \
+            --arch x86_64 \
+            -M 512M \
+            . > /tmp/httpserver-go1.21.log 2>&1 &
+
+          KRAFT_PID=$!
+
+          for i in {1..30}; do
+            if curl -fsS http://localhost:8080 | grep -q "Bye, World!"; then
+              echo "HTTP server validation successful"
+              kill "$KRAFT_PID" || true
+              exit 0
+            fi
+
+            sleep 1
+          done
+
+          echo "HTTP server validation failed"
+          cat /tmp/httpserver-go1.21.log
+          kill "$KRAFT_PID" || true
+          exit 1
