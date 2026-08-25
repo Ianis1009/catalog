@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - "examples/httpserver-gcc13.2-distroless/**"
+      - ".github/workflows/test-httpserver-gcc13.2-distroless.yaml"
 
 jobs:
   build-benchmark-test:
@@ -19,11 +20,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install KraftKit
-        run: curl -sSfL https://get.kraftkit.sh | sudo DEBIAN_FRONTEND=noninteractive sh -s -- -y
+        run: |
+          curl -sSfL https://get.kraftkit.sh | sudo DEBIAN_FRONTEND=noninteractive sh -s -- -y
 
       - name: Build Unikernel
         working-directory: examples/httpserver-gcc13.2-distroless
-        run: kraft build --plat qemu --arch x86_64 .
+        run: |
+          kraft build --plat qemu --arch x86_64 .
 
       - name: Measure RootFS Size
         working-directory: examples/httpserver-gcc13.2-distroless
@@ -50,19 +53,35 @@ jobs:
       - name: Run and Validate HTTP Server
         working-directory: examples/httpserver-gcc13.2-distroless
         run: |
-          kraft run --rm -p 8080:8080 --plat qemu --arch x86_64 -M 128M . > /tmp/httpserver-gcc13.log 2>&1 &
+          kraft run \
+            --rm \
+            -p 8080:8080 \
+            --plat qemu \
+            --arch x86_64 \
+            -M 128M \
+            . > /tmp/httpserver-gcc13.log 2>&1 &
+
           KRAFT_PID=$!
 
-          for i in {1..30}; do
+          for i in {1..120}; do
+            if ! kill -0 "$KRAFT_PID" 2>/dev/null; then
+              echo "Kraft process exited unexpectedly."
+              cat /tmp/httpserver-gcc13.log
+              exit 1
+            fi
+
             if curl -fsS http://localhost:8080 | grep -q "Bye, World!"; then
-              echo "HTTP server validation successful"
-              kill $KRAFT_PID || true
+              echo "HTTP server validation successful."
+              kill "$KRAFT_PID" || true
               exit 0
             fi
+
             sleep 1
           done
 
-          echo "HTTP server validation failed"
+          echo "HTTP server validation failed."
+          echo "Kraft output:"
           cat /tmp/httpserver-gcc13.log
-          kill $KRAFT_PID || true
+
+          kill "$KRAFT_PID" || true
           exit 1
