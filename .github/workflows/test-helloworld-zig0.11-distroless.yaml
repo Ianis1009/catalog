@@ -1,0 +1,75 @@
+name: Test Zig 0.11 Helloworld Distroless
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "examples/helloworld-zig0.11-distroless/**"
+      - ".github/workflows/test-helloworld-zig0.11-distroless.yml"
+  pull_request:
+    paths:
+      - "examples/helloworld-zig0.11-distroless/**"
+
+jobs:
+  build-benchmark-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install KraftKit
+        run: |
+          curl -sSfL https://get.kraftkit.sh | sudo DEBIAN_FRONTEND=noninteractive sh -s -- -y
+
+      - name: Verify KraftKit
+        run: |
+          kraft version
+
+      - name: Build Unikernel
+        working-directory: examples/helloworld-zig0.11-distroless
+        run: |
+          kraft build --plat qemu --arch x86_64 .
+
+      - name: Measure RootFS Size
+        working-directory: examples/helloworld-zig0.11-distroless
+        run: |
+          du -sh .unikraft/build/ || true
+          find .unikraft/build/ -type f -name "*.img" -exec du -h {} + || true
+
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          scan-ref: "examples/helloworld-zig0.11-distroless"
+          format: "table"
+          exit-code: "0"
+          severity: "CRITICAL,HIGH"
+
+      - name: Install QEMU and Grant Permissions
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86
+          sudo chmod 666 /dev/kvm
+
+      - name: Run and Validate Output
+        working-directory: examples/helloworld-zig0.11-distroless
+        run: |
+          set -e
+
+          output="$(kraft run --rm \
+            --plat qemu \
+            --arch x86_64 \
+            -M 128M \
+            . 2>&1)"
+
+          echo "$output"
+
+          if ! echo "$output" | grep -q "Bye, World!"; then
+            echo "Hello World validation failed"
+            exit 1
+          fi
+
+          echo "Hello World validation passed"
+
+          
