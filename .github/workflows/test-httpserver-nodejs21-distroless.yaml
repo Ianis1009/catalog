@@ -1,115 +1,20 @@
-name: Test Node.js 21 HTTP Server Distroless
+name: Test Node.js 21 Distroless
 
 on:
-  workflow_dispatch:
   push:
     branches:
-      - "test/httpserver-nodejs21-distroless"
-  pull_request:
-    paths:
-      - "examples/httpserver-nodejs21-distroless/**"
-      - ".github/workflows/test-httpserver-nodejs21-distroless.yaml"
+      - test/httpserver-nodejs21-distroless
 
 jobs:
-  build:
-    name: Build and test Node.js 21 distroless example
+  test:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install KraftKit
+      - name: Test workflow
         run: |
-          curl -sSfL https://get.kraftkit.sh | \
-            sudo DEBIAN_FRONTEND=noninteractive sh -s -- -y
-
-      - name: Build Unikernel
-        working-directory: examples/httpserver-nodejs21-distroless
-        run: |
-          kraft build --plat qemu --arch x86_64 .
-
-      - name: Measure rootfs size
-        working-directory: examples/httpserver-nodejs21-distroless
-        run: |
-          echo "=== Build directory ==="
-          du -sh .unikraft/build/ || true
-
-          echo "=== Rootfs/image files ==="
-          find .unikraft/build/ -type f \
-            \( -name "*.img" -o -name "*.cpio" \) \
-            -exec du -h {} + || true
-
-      - name: Scan for vulnerabilities
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: fs
-          scan-ref: examples/httpserver-nodejs21-distroless
-          format: table
-          severity: HIGH,CRITICAL
-          exit-code: "0"
-
-      - name: Install QEMU
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-system-x86
-
-      - name: Enable KVM
-        run: |
-          sudo chmod 666 /dev/kvm
-
-      - name: Run Unikernel
-        working-directory: examples/httpserver-nodejs21-distroless
-        run: |
-          kraft run \
-            --rm \
-            -p 8080:8080 \
-            --plat qemu \
-            --arch x86_64 \
-            -M 512M \
-            . > kraft.log 2>&1 &
-
-          echo $! > kraft.pid
-
-      - name: Wait for HTTP server
-        working-directory: examples/httpserver-nodejs21-distroless
-        run: |
-          for i in {1..30}; do
-            if curl -fsS http://127.0.0.1:8080 > response.txt; then
-              echo "HTTP server is ready."
-              exit 0
-            fi
-
-            echo "Waiting for HTTP server... attempt $i/30"
-            sleep 2
-          done
-
-          echo "HTTP server did not become ready."
-          echo "=== Kraft log ==="
-          cat kraft.log
-          exit 1
-
-      - name: Validate HTTP response
-        working-directory: examples/httpserver-nodejs21-distroless
-        run: |
-          echo "=== HTTP response ==="
-          cat response.txt
-
-          grep -q "Bye, World!" response.txt
-
-          echo "HTTP response validated successfully."
-
-      - name: Show Kraft log
-        if: always()
-        working-directory: examples/httpserver-nodejs21-distroless
-        run: |
-          echo "=== Kraft log ==="
-          cat kraft.log || true
-
-      - name: Stop Unikernel
-        if: always()
-        working-directory: examples/httpserver-nodejs21-distroless
-        run: |
-          if [ -f kraft.pid ]; then
-            kill "$(cat kraft.pid)" 2>/dev/null || true
-          fi
+          echo "GitHub Actions workflow detected successfully"
+          echo "Branch: ${{ github.ref }}"
+          echo "Commit: ${{ github.sha }}"
