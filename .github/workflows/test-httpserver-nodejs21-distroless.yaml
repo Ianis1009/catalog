@@ -3,16 +3,16 @@ name: Test Node.js 21 HTTP Server Distroless
 on:
   workflow_dispatch:
   push:
-    paths:
-      - "examples/httpserver-nodejs21-distroless/**"
-      - ".github/workflows/test-httpserver-nodejs21-distroless.yaml"
+    branches:
+      - "test/httpserver-nodejs21-distroless"
   pull_request:
     paths:
       - "examples/httpserver-nodejs21-distroless/**"
       - ".github/workflows/test-httpserver-nodejs21-distroless.yaml"
 
 jobs:
-  build-test:
+  build:
+    name: Build and test Node.js 21 distroless example
     runs-on: ubuntu-latest
 
     steps:
@@ -32,10 +32,10 @@ jobs:
       - name: Measure rootfs size
         working-directory: examples/httpserver-nodejs21-distroless
         run: |
-          echo "Build directory:"
+          echo "=== Build directory ==="
           du -sh .unikraft/build/ || true
 
-          echo "Image/rootfs files:"
+          echo "=== Rootfs/image files ==="
           find .unikraft/build/ -type f \
             \( -name "*.img" -o -name "*.cpio" \) \
             -exec du -h {} + || true
@@ -46,8 +46,8 @@ jobs:
           scan-type: fs
           scan-ref: examples/httpserver-nodejs21-distroless
           format: table
+          severity: HIGH,CRITICAL
           exit-code: "0"
-          severity: CRITICAL,HIGH
 
       - name: Install QEMU
         run: |
@@ -58,11 +58,9 @@ jobs:
         run: |
           sudo chmod 666 /dev/kvm
 
-      - name: Run Unikernel and validate HTTP response
+      - name: Run Unikernel
         working-directory: examples/httpserver-nodejs21-distroless
         run: |
-          set -e
-
           kraft run \
             --rm \
             -p 8080:8080 \
@@ -71,42 +69,47 @@ jobs:
             -M 512M \
             . > kraft.log 2>&1 &
 
-          KRAFT_PID=$!
+          echo $! > kraft.pid
 
-          echo "Waiting for Node.js HTTP server..."
-
+      - name: Wait for HTTP server
+        working-directory: examples/httpserver-nodejs21-distroless
+        run: |
           for i in {1..30}; do
-            if curl -fsS http://127.0.0.1:8080 > response.txt 2>/dev/null; then
+            if curl -fsS http://127.0.0.1:8080 > response.txt; then
               echo "HTTP server is ready."
-              break
+              exit 0
             fi
 
-            if ! kill -0 "$KRAFT_PID" 2>/dev/null; then
-              echo "Kraft process exited unexpectedly."
-              cat kraft.log
-              exit 1
-            fi
-
+            echo "Waiting for HTTP server... attempt $i/30"
             sleep 2
           done
 
-          echo "===== Kraft log ====="
+          echo "HTTP server did not become ready."
+          echo "=== Kraft log ==="
           cat kraft.log
+          exit 1
 
-          if [ ! -f response.txt ]; then
-            echo "HTTP server did not become ready."
-            exit 1
-          fi
-
-          echo "===== HTTP response ====="
+      - name: Validate HTTP response
+        working-directory: examples/httpserver-nodejs21-distroless
+        run: |
+          echo "=== HTTP response ==="
           cat response.txt
 
-          if ! grep -q "Bye, World!" response.txt; then
-            echo "Unexpected HTTP response."
-            exit 1
-          fi
+          grep -q "Bye, World!" response.txt
 
           echo "HTTP response validated successfully."
 
-          kill "$KRAFT_PID" 2>/dev/null || true
-          wait "$KRAFT_PID" 2>/dev/null || true
+      - name: Show Kraft log
+        if: always()
+        working-directory: examples/httpserver-nodejs21-distroless
+        run: |
+          echo "=== Kraft log ==="
+          cat kraft.log || true
+
+      - name: Stop Unikernel
+        if: always()
+        working-directory: examples/httpserver-nodejs21-distroless
+        run: |
+          if [ -f kraft.pid ]; then
+            kill "$(cat kraft.pid)" 2>/dev/null || true
+          fi
