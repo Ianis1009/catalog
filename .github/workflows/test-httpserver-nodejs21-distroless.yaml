@@ -1,0 +1,20 @@
+name: Test Node.js 21 Distroless
+
+on:
+  push:
+    branches:
+      - test/httpserver-nodejs21-distroless-clean
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify workflow
+        run: |
+          echo "GitHub Actions workflow detected successfully"
+          echo "Branch: ${{ github.ref }}"
+          echo "Commit: ${{ github.sha }}"
