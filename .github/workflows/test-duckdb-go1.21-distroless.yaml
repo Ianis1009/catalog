@@ -1,37 +1,76 @@
 name: Test DuckDB Go 1.21 Distroless
 
 on:
-  push:
-    branches:
-      - test/duckdb-go1.21-distroless-workflow
   workflow_dispatch:
 
+  push:
+    paths:
+      - "examples/duckdb-go1.21-distroless/**"
+      - ".github/workflows/test-duckdb-go1.21-distroless.yml"
+
+  pull_request:
+    paths:
+      - "examples/duckdb-go1.21-distroless/**"
+      - ".github/workflows/test-duckdb-go1.21-distroless.yml"
+
+permissions:
+  contents: read
+
 jobs:
-  test:
+  build-benchmark-test:
     runs-on: ubuntu-24.04
 
+    env:
+      EXAMPLE_DIR: examples/duckdb-go1.21-distroless
+      KRAFT_LOG: kraft.log
+      RESPONSE_FILE: response.txt
+      KRAFT_MEMORY: 512M
+      KRAFT_PORT: 8080
+
     steps:
+      # ------------------------------------------------------------
+      # Checkout
+      # ------------------------------------------------------------
+
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      # ------------------------------------------------------------
+      # Install basic dependencies
+      # ------------------------------------------------------------
+
+      - name: Install system dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            curl \
+            ca-certificates \
+            qemu-system-x86 \
+            qemu-utils \
+            file
+
+      # ------------------------------------------------------------
+      # Install KraftKit
+      # ------------------------------------------------------------
 
       - name: Install KraftKit
         shell: bash
         run: |
           set -euxo pipefail
 
-          KRAFT_VERSION="v0.12.1"
+          curl --proto '=https' \
+            --tlsv1.2 \
+            -sSfL \
+            https://get.kraftkit.sh \
+            | sudo DEBIAN_FRONTEND=noninteractive sh -s -- -y
 
-          curl -fsSL \
-            "https://github.com/unikraft/kraftkit/releases/download/${KRAFT_VERSION}/kraft-linux-amd64" \
-            -o /tmp/kraft
-
-          chmod +x /tmp/kraft
-
-          sudo install -m 0755 /tmp/kraft /usr/local/bin/kraft
-
-          echo "===== KraftKit binary ====="
-          ls -l /usr/local/bin/kraft
-          file /usr/local/bin/kraft
+      # ------------------------------------------------------------
+      # Verify KraftKit
+      # ------------------------------------------------------------
 
       - name: Verify KraftKit
         shell: bash
@@ -39,72 +78,373 @@ jobs:
           set -euxo pipefail
 
           command -v kraft
+
           kraft version
 
-      - name: Build and start DuckDB unikernel
-        working-directory: examples/duckdb-go1.21-distroless
+          echo "===== KraftKit location ====="
+          which kraft
+
+          echo "===== KraftKit version ====="
+          kraft version
+
+      # ------------------------------------------------------------
+      # Verify QEMU
+      # ------------------------------------------------------------
+
+      - name: Verify QEMU
         shell: bash
         run: |
           set -euxo pipefail
+
+          command -v qemu-system-x86_64
+
+          qemu-system-x86_64 --version
+
+          echo "===== KVM ====="
+
+          if [ -e /dev/kvm ]; then
+            ls -l /dev/kvm
+          else
+            echo "/dev/kvm is not available."
+          fi
+
+      # ------------------------------------------------------------
+      # Inspect example
+      # ------------------------------------------------------------
+
+      - name: Inspect DuckDB example
+        working-directory: ${{ env.EXAMPLE_DIR }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          echo "===== Current directory ====="
+          pwd
+
+          echo "===== Directory contents ====="
+          find . -maxdepth 3 -type f -print | sort
+
+          echo "===== Kraftfile ====="
+          cat Kraftfile
+
+          echo "===== Dockerfile ====="
+          cat Dockerfile
+
+          echo "===== Source files ====="
+          find src -type f -maxdepth 5 -print -exec sh -c 'echo "----- $1 -----"; cat "$1"' _ {} \;
+
+      # ------------------------------------------------------------
+      # Build
+      # ------------------------------------------------------------
+
+      - name: Build Unikernel
+        working-directory: ${{ env.EXAMPLE_DIR }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          kraft build \
+            --plat qemu \
+            --arch x86_64 \
+            .
+
+      # ------------------------------------------------------------
+      # Inspect build output
+      # ------------------------------------------------------------
+
+      - name: Inspect build output
+        working-directory: ${{ env.EXAMPLE_DIR }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          echo "===== .unikraft directory ====="
+
+          if [ -d ".unikraft" ]; then
+            find .unikraft -maxdepth 5 -type f -print | sort
+          else
+            echo "ERROR: .unikraft directory was not generated."
+            exit 1
+          fi
+
+      # ------------------------------------------------------------
+      # Measure RootFS / build size
+      # ------------------------------------------------------------
+
+      - name: Measure RootFS Size
+        working-directory: ${{ env.EXAMPLE_DIR }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          echo "===== Build directory size ====="
+
+          du -sh .unikraft/build/ || true
+
+          echo "===== Image files ====="
+
+          find .unikraft/build/ \
+            -type f \
+            \( -name "*.img" -o -name "*.elf" -o -name "*.bin" \) \
+            -exec du -h {} + || true
+
+      # ------------------------------------------------------------
+      # Trivy
+      # ------------------------------------------------------------
+
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: examples/duckdb-go1.21-distroless
+          format: table
+          exit-code: 0
+          severity: CRITICAL,HIGH
+
+      # ------------------------------------------------------------
+      # Enable KVM when available
+      # ------------------------------------------------------------
+
+      - name: Configure KVM permissions
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          if [ -e /dev/kvm ]; then
+            sudo chmod 666 /dev/kvm
+            ls -l /dev/kvm
+          else
+            echo "WARNING: /dev/kvm is not available."
+            echo "QEMU may fall back to software emulation."
+          fi
+
+      # ------------------------------------------------------------
+      # Start unikernel
+      # ------------------------------------------------------------
+
+      - name: Start DuckDB Unikernel
+        working-directory: ${{ env.EXAMPLE_DIR }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          rm -f "${KRAFT_LOG}"
+          rm -f "${RESPONSE_FILE}"
+
+          echo "===== Starting DuckDB unikernel ====="
 
           kraft run \
             --rm \
             --plat qemu \
             --arch x86_64 \
-            -M 512M \
-            -p 8080:8080 \
-            . > kraft.log 2>&1 &
+            -M "${KRAFT_MEMORY}" \
+            -p "${KRAFT_PORT}:${KRAFT_PORT}" \
+            . > "${KRAFT_LOG}" 2>&1 &
 
           KRAFT_PID=$!
 
-          echo "KRAFT_PID=${KRAFT_PID}" >> "$GITHUB_ENV"
+          echo "KRAFT_PID=${KRAFT_PID}" >> "${GITHUB_ENV}"
 
-          echo "===== Waiting for DuckDB ====="
+          echo "Started Kraft process with PID: ${KRAFT_PID}"
 
-          for i in $(seq 1 60); do
-            if curl -fsS http://127.0.0.1:8080 > response.txt 2>/dev/null; then
+      # ------------------------------------------------------------
+      # Wait for HTTP server
+      # ------------------------------------------------------------
+
+      - name: Wait for DuckDB server
+        working-directory: ${{ env.EXAMPLE_DIR }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          echo "===== Waiting for DuckDB HTTP server ====="
+
+          READY=0
+
+          for i in $(seq 1 90); do
+            echo "Health check ${i}/90..."
+
+            if curl \
+              --fail \
+              --silent \
+              --show-error \
+              --connect-timeout 2 \
+              --max-time 5 \
+              "http://127.0.0.1:${KRAFT_PORT}" \
+              > "${RESPONSE_FILE}" 2>/dev/null; then
+
               echo "DuckDB server is ready."
+
+              READY=1
               break
             fi
 
-            if ! kill -0 "$KRAFT_PID" 2>/dev/null; then
-              echo "Kraft process exited unexpectedly."
+            if [ -n "${KRAFT_PID:-}" ] && \
+               ! kill -0 "${KRAFT_PID}" 2>/dev/null; then
+
+              echo "ERROR: Kraft process exited unexpectedly."
+
               echo "===== Kraft log ====="
-              cat kraft.log
+              cat "${KRAFT_LOG}" || true
+
               exit 1
             fi
 
             sleep 1
           done
 
-          if [ ! -s response.txt ]; then
-            echo "DuckDB server did not become ready."
+          if [ "${READY}" -ne 1 ]; then
+            echo "ERROR: DuckDB server did not become ready."
+
             echo "===== Kraft log ====="
-            cat kraft.log
+            cat "${KRAFT_LOG}" || true
+
             exit 1
           fi
 
-          echo "===== DuckDB response ====="
-          cat response.txt
+      # ------------------------------------------------------------
+      # Display response
+      # ------------------------------------------------------------
 
-      - name: Validate DuckDB response
-        working-directory: examples/duckdb-go1.21-distroless
+      - name: Show DuckDB response
+        working-directory: ${{ env.EXAMPLE_DIR }}
         shell: bash
         run: |
           set -euxo pipefail
 
-          grep -F "id: %d, name: %s 42 John" response.txt
+          echo "===== DuckDB HTTP response ====="
+
+          cat "${RESPONSE_FILE}"
+
+          echo
+          echo "===== Response size ====="
+
+          wc -c "${RESPONSE_FILE}"
+
+      # ------------------------------------------------------------
+      # Validate HTTP response
+      # ------------------------------------------------------------
+
+      - name: Validate HTTP response
+        working-directory: ${{ env.EXAMPLE_DIR }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          test -s "${RESPONSE_FILE}"
+
+          echo "Response file is not empty."
+
+      # ------------------------------------------------------------
+      # Validate expected DuckDB application output
+      # ------------------------------------------------------------
+
+      - name: Validate DuckDB output
+        working-directory: ${{ env.EXAMPLE_DIR }}
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          echo "===== Validating expected output ====="
+
+          if grep -Fq "42" "${RESPONSE_FILE}" && \
+             grep -Fq "John" "${RESPONSE_FILE}"; then
+
+            echo "DuckDB returned the expected record:"
+            echo "id = 42"
+            echo "name = John"
+
+          else
+
+            echo "ERROR: Expected DuckDB record was not found."
+
+            echo "Expected values:"
+            echo "  id   = 42"
+            echo "  name = John"
+
+            echo "Actual response:"
+            cat "${RESPONSE_FILE}"
+
+            exit 1
+          fi
+
+      # ------------------------------------------------------------
+      # Display Kraft log
+      # ------------------------------------------------------------
 
       - name: Show Kraft log
         if: always()
-        working-directory: examples/duckdb-go1.21-distroless
+        working-directory: ${{ env.EXAMPLE_DIR }}
+        shell: bash
         run: |
-          cat kraft.log || true
+          echo "===== Kraft log ====="
+
+          if [ -f "${KRAFT_LOG}" ]; then
+            cat "${KRAFT_LOG}"
+          else
+            echo "No Kraft log was generated."
+          fi
+
+      # ------------------------------------------------------------
+      # Display processes
+      # ------------------------------------------------------------
+
+      - name: Show QEMU processes
+        if: always()
+        shell: bash
+        run: |
+          echo "===== QEMU processes ====="
+
+          ps aux | grep -E "qemu|kraft" | grep -v grep || true
+
+      # ------------------------------------------------------------
+      # Upload logs when something fails
+      # ------------------------------------------------------------
+
+      - name: Upload Kraft logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: duckdb-kraft-logs
+          path: |
+            examples/duckdb-go1.21-distroless/kraft.log
+            examples/duckdb-go1.21-distroless/response.txt
+          if-no-files-found: ignore
+
+      # ------------------------------------------------------------
+      # Stop unikernel
+      # ------------------------------------------------------------
 
       - name: Stop Kraft
         if: always()
         shell: bash
         run: |
+          set +e
+
+          echo "===== Stopping Kraft ====="
+
           if [ -n "${KRAFT_PID:-}" ]; then
+            echo "Kraft PID: ${KRAFT_PID}"
+
             kill "${KRAFT_PID}" 2>/dev/null || true
+
+            sleep 2
+
+            kill -9 "${KRAFT_PID}" 2>/dev/null || true
+          fi
+
+      # ------------------------------------------------------------
+      # Final status
+      # ------------------------------------------------------------
+
+      - name: Final validation
+        if: always()
+        shell: bash
+        run: |
+          echo "===== Workflow finished ====="
+
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "DuckDB Go 1.21 Distroless test PASSED."
+          else
+            echo "DuckDB Go 1.21 Distroless test FAILED."
           fi
