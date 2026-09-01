@@ -1,0 +1,160 @@
+\name: Test Memcached 1.6 Distroless
+
+on:
+  push:
+    paths:
+      - "examples/memcached1.6-base-distroless/**"
+      - ".github/workflows/test-memcached1.6-base-distroless.yaml"
+  pull_request:
+    paths:
+      - "examples/memcached1.6-base-distroless/**"
+      - ".github/workflows/test-memcached1.6-base-distroless.yaml"
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Build and test Memcached 1.6 Distroless
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          set -eux
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            ca-certificates \
+            netcat-openbsd \
+            qemu-system-x86 \
+            qemu-utils
+
+      - name: Install KraftKit
+        shell: bash
+        run: |
+          set -eux
+
+          mkdir -p "$HOME/.local/bin"
+
+          echo "Installing KraftKit..."
+
+          curl -fsSL \
+            https://github.com/unikraft/kraftkit/releases/latest/download/kraft-linux-amd64 \
+            -o "$HOME/.local/bin/kraft"
+
+          chmod +x "$HOME/.local/bin/kraft"
+
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+          "$HOME/.local/bin/kraft" version
+
+      - name: Verify KraftKit
+        shell: bash
+        run: |
+          set -eux
+
+          command -v kraft
+          kraft version
+
+      - name: Build and run Memcached Unikernel
+        working-directory: examples/memcached1.6-base-distroless
+        shell: bash
+        run: |
+          set -e
+
+          rm -f kraft.log
+
+          echo "===== Kraft version ====="
+          kraft version
+
+          echo "===== Starting Unikraft ====="
+
+          kraft run \
+            --rm \
+            -p 11211:11211 \
+            --plat qemu \
+            --arch x86_64 \
+            -M 256M \
+            . > kraft.log 2>&1 &
+
+          KRAFT_PID=$!
+
+          cleanup() {
+            echo "===== Stopping Unikraft ====="
+
+            if kill -0 "$KRAFT_PID" 2>/dev/null; then
+              kill "$KRAFT_PID" 2>/dev/null || true
+              sleep 2
+            fi
+
+            wait "$KRAFT_PID" 2>/dev/null || true
+          }
+
+          trap cleanup EXIT
+
+          echo "===== Waiting for Memcached ====="
+
+          READY=0
+
+          for i in $(seq 1 60); do
+            if nc -z 127.0.0.1 11211 2>/dev/null; then
+              READY=1
+              break
+            fi
+
+            if ! kill -0 "$KRAFT_PID" 2>/dev/null; then
+              echo "ERROR: Unikraft exited before Memcached became ready."
+              echo "===== Kraft log ====="
+              cat kraft.log || true
+              exit 1
+            fi
+
+            sleep 1
+          done
+
+          if [ "$READY" -ne 1 ]; then
+            echo "ERROR: Memcached did not become ready."
+            echo "===== Kraft log ====="
+            cat kraft.log || true
+            exit 1
+          fi
+
+          echo "Memcached is ready."
+
+          echo "===== Kraft log ====="
+          cat kraft.log || true
+
+          echo "===== Memcached version ====="
+
+          VERSION_OUTPUT="$(
+            printf 'version\r\n' |
+              nc -w 3 127.0.0.1 11211
+          )"
+
+          printf '%s\n' "$VERSION_OUTPUT"
+
+          echo "$VERSION_OUTPUT" |
+            grep -Fq "VERSION 1.6.23"
+
+          echo "===== Memcached functional test ====="
+
+          RESPONSE="$(
+            printf 'set test 0 0 5\r\nhello\r\nget test\r\nquit\r\n' |
+              nc -w 3 127.0.0.1 11211
+          )"
+
+          printf '%s\n' "$RESPONSE"
+
+          echo "===== Validating Memcached response ====="
+
+          echo "$RESPONSE" | grep -Fxq "STORED"
+          echo "$RESPONSE" | grep -Fxq "VALUE test 0 5"
+          echo "$RESPONSE" | grep -Fxq "hello"
+          echo "$RESPONSE" | grep -Fxq "END"
+
+          echo "========================================="
+          echo " Memcached 1.6.23 test PASSED"
+          echo "========================================="
