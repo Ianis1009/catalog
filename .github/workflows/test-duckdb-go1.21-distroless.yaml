@@ -14,31 +14,38 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
-        run: |
-          set -eux
-          sudo apt-get update
-          sudo apt-get install -y curl ca-certificates
-
       - name: Install KraftKit
+        shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
-          curl -fsSL https://get.kraftkit.sh | sh -s -- --yes
+          KRAFT_VERSION="v0.12.1"
 
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          echo "/usr/local/bin" >> "$GITHUB_PATH"
+          curl -fsSL \
+            "https://github.com/unikraft/kraftkit/releases/download/${KRAFT_VERSION}/kraft-linux-amd64" \
+            -o /tmp/kraft
+
+          chmod +x /tmp/kraft
+
+          sudo install -m 0755 /tmp/kraft /usr/local/bin/kraft
+
+          echo "===== KraftKit binary ====="
+          ls -l /usr/local/bin/kraft
+          file /usr/local/bin/kraft
 
       - name: Verify KraftKit
+        shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
+
           command -v kraft
           kraft version
 
       - name: Build and start DuckDB unikernel
         working-directory: examples/duckdb-go1.21-distroless
+        shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
 
           kraft run \
             --rm \
@@ -50,6 +57,10 @@ jobs:
 
           KRAFT_PID=$!
 
+          echo "KRAFT_PID=${KRAFT_PID}" >> "$GITHUB_ENV"
+
+          echo "===== Waiting for DuckDB ====="
+
           for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:8080 > response.txt 2>/dev/null; then
               echo "DuckDB server is ready."
@@ -57,7 +68,8 @@ jobs:
             fi
 
             if ! kill -0 "$KRAFT_PID" 2>/dev/null; then
-              echo "Kraft exited unexpectedly."
+              echo "Kraft process exited unexpectedly."
+              echo "===== Kraft log ====="
               cat kraft.log
               exit 1
             fi
@@ -67,16 +79,20 @@ jobs:
 
           if [ ! -s response.txt ]; then
             echo "DuckDB server did not become ready."
+            echo "===== Kraft log ====="
             cat kraft.log
             exit 1
           fi
 
+          echo "===== DuckDB response ====="
           cat response.txt
 
       - name: Validate DuckDB response
         working-directory: examples/duckdb-go1.21-distroless
+        shell: bash
         run: |
-          set -eux
+          set -euxo pipefail
+
           grep -F "id: %d, name: %s 42 John" response.txt
 
       - name: Show Kraft log
@@ -85,7 +101,10 @@ jobs:
         run: |
           cat kraft.log || true
 
-      - name: Stop unikernel
+      - name: Stop Kraft
         if: always()
+        shell: bash
         run: |
-          pkill -f "kraft run" || true
+          if [ -n "${KRAFT_PID:-}" ]; then
+            kill "${KRAFT_PID}" 2>/dev/null || true
+          fi
