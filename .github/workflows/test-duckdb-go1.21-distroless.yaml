@@ -3,11 +3,8 @@ name: Test DuckDB Go 1.21 Distroless
 on:
   push:
     branches:
-      - feat/duckdb-go1.21-distroless
-  pull_request:
-    paths:
-      - "examples/duckdb-go1.21-distroless/**"
-      - ".github/workflows/test-duckdb-go1.21-distroless.yaml"
+      - test/duckdb-go1.21-distroless-workflow
+  workflow_dispatch:
 
 jobs:
   test:
@@ -53,8 +50,6 @@ jobs:
 
           KRAFT_PID=$!
 
-          echo "KRAFT_PID=$KRAFT_PID" >> "$GITHUB_ENV"
-
           for i in $(seq 1 60); do
             if curl -fsS http://127.0.0.1:8080 > response.txt 2>/dev/null; then
               echo "DuckDB server is ready."
@@ -62,7 +57,7 @@ jobs:
             fi
 
             if ! kill -0 "$KRAFT_PID" 2>/dev/null; then
-              echo "Kraft process exited unexpectedly."
+              echo "Kraft exited unexpectedly."
               cat kraft.log
               exit 1
             fi
@@ -70,7 +65,11 @@ jobs:
             sleep 1
           done
 
-          test -s response.txt
+          if [ ! -s response.txt ]; then
+            echo "DuckDB server did not become ready."
+            cat kraft.log
+            exit 1
+          fi
 
           cat response.txt
 
@@ -78,7 +77,6 @@ jobs:
         working-directory: examples/duckdb-go1.21-distroless
         run: |
           set -eux
-
           grep -F "id: %d, name: %s 42 John" response.txt
 
       - name: Show Kraft log
@@ -90,7 +88,4 @@ jobs:
       - name: Stop unikernel
         if: always()
         run: |
-          if [ -n "${KRAFT_PID:-}" ] && kill -0 "$KRAFT_PID" 2>/dev/null; then
-            kill "$KRAFT_PID" || true
-            sleep 2
-          fi
+          pkill -f "kraft run" || true
