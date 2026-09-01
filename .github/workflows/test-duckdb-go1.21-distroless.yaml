@@ -1,0 +1,96 @@
+name: Test DuckDB Go 1.21 Distroless
+
+on:
+  push:
+    branches:
+      - feat/duckdb-go1.21-distroless
+  pull_request:
+    paths:
+      - "examples/duckdb-go1.21-distroless/**"
+      - ".github/workflows/test-duckdb-go1.21-distroless.yaml"
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          set -eux
+          sudo apt-get update
+          sudo apt-get install -y curl ca-certificates
+
+      - name: Install KraftKit
+        run: |
+          set -eux
+
+          curl -fsSL https://get.kraftkit.sh | sh -s -- --yes
+
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          echo "/usr/local/bin" >> "$GITHUB_PATH"
+
+      - name: Verify KraftKit
+        run: |
+          set -eux
+          command -v kraft
+          kraft version
+
+      - name: Build and start DuckDB unikernel
+        working-directory: examples/duckdb-go1.21-distroless
+        run: |
+          set -eux
+
+          kraft run \
+            --rm \
+            --plat qemu \
+            --arch x86_64 \
+            -M 512M \
+            -p 8080:8080 \
+            . > kraft.log 2>&1 &
+
+          KRAFT_PID=$!
+
+          echo "KRAFT_PID=$KRAFT_PID" >> "$GITHUB_ENV"
+
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8080 > response.txt 2>/dev/null; then
+              echo "DuckDB server is ready."
+              break
+            fi
+
+            if ! kill -0 "$KRAFT_PID" 2>/dev/null; then
+              echo "Kraft process exited unexpectedly."
+              cat kraft.log
+              exit 1
+            fi
+
+            sleep 1
+          done
+
+          test -s response.txt
+
+          cat response.txt
+
+      - name: Validate DuckDB response
+        working-directory: examples/duckdb-go1.21-distroless
+        run: |
+          set -eux
+
+          grep -F "id: %d, name: %s 42 John" response.txt
+
+      - name: Show Kraft log
+        if: always()
+        working-directory: examples/duckdb-go1.21-distroless
+        run: |
+          cat kraft.log || true
+
+      - name: Stop unikernel
+        if: always()
+        run: |
+          if [ -n "${KRAFT_PID:-}" ] && kill -0 "$KRAFT_PID" 2>/dev/null; then
+            kill "$KRAFT_PID" || true
+            sleep 2
+          fi
