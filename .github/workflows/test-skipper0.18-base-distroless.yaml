@@ -58,33 +58,55 @@ jobs:
         run: |
           sudo chmod 666 /dev/kvm
 
+      - name: Locate Unikernel artifact
+        working-directory: examples/skipper0.18-base-distroless
+        run: |
+          echo "===== Build artifacts ====="
+          find .unikraft/build/ -type f -print
+
+          KERNEL=$(find .unikraft/build/ -type f \
+            \( -name "qemu-x86_64" -o -name "unikraft" -o -name "kernel" \) \
+            | head -n 1)
+
+          if [ -z "$KERNEL" ]; then
+            echo "Could not locate QEMU kernel artifact."
+            exit 1
+          fi
+
+          echo "Using kernel artifact:"
+          echo "$KERNEL"
+
+          echo "KERNEL=$KERNEL" >> "$GITHUB_ENV"
+
       - name: Run Unikernel and validate HTTP response
         working-directory: examples/skipper0.18-base-distroless
         run: |
           set -e
 
-          echo "===== Built artifacts ====="
-          find .unikraft/build/ -maxdepth 2 -type f | sort
+          echo "Starting Unikernel directly with QEMU..."
+          echo "Kernel: $KERNEL"
 
-          echo "===== Starting Unikernel ====="
+          qemu-system-x86_64 \
+            -enable-kvm \
+            -m 512M \
+            -kernel "$KERNEL" \
+            -append "console=ttyS0" \
+            -nographic \
+            -netdev user,id=net0,hostfwd=tcp::9090-:9090 \
+            -device virtio-net-pci,netdev=net0 \
+            > qemu.log 2>&1 &
 
-          kraft run \
-            --rm \
-            -p 9090:9090 \
-            --plat qemu \
-            --arch x86_64 \
-            -M 512M \
-            . > kraft.log 2>&1 &
-
-          KRAFT_PID=$!
+          QEMU_PID=$!
 
           echo "Waiting for Skipper HTTP server..."
 
-          for i in {1..90}; do
-            if ! kill -0 "$KRAFT_PID" 2>/dev/null; then
-              echo "Kraft process exited unexpectedly."
-              echo "===== Kraft log ====="
-              cat kraft.log
+          HTTP_STATUS=""
+
+          for i in {1..60}; do
+            if ! kill -0 "$QEMU_PID" 2>/dev/null; then
+              echo "QEMU process exited unexpectedly."
+              echo "===== QEMU log ====="
+              cat qemu.log
               exit 1
             fi
 
@@ -101,8 +123,8 @@ jobs:
             sleep 2
           done
 
-          echo "===== Kraft log ====="
-          cat kraft.log
+          echo "===== QEMU log ====="
+          cat qemu.log
 
           echo "===== HTTP status ====="
           echo "$HTTP_STATUS"
@@ -148,5 +170,5 @@ jobs:
 
           echo "404 route validated successfully."
 
-          kill "$KRAFT_PID" 2>/dev/null || true
-          wait "$KRAFT_PID" 2>/dev/null || true
+          kill "$QEMU_PID" 2>/dev/null || true
+          wait "$QEMU_PID" 2>/dev/null || true
