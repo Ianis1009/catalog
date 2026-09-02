@@ -75,14 +75,20 @@ jobs:
 
           echo "Waiting for Skipper HTTP server..."
 
+          HTTP_STATUS=""
+
           for i in {1..30}; do
-            if curl -fsS http://127.0.0.1:9090 > response.txt 2>/dev/null; then
+            HTTP_STATUS=$(curl -sS -o response.txt -w "%{http_code}" \
+              http://127.0.0.1:9090 || true)
+
+            if [ "$HTTP_STATUS" = "200" ]; then
               echo "Skipper HTTP server is ready."
               break
             fi
 
             if ! kill -0 "$KRAFT_PID" 2>/dev/null; then
               echo "Kraft process exited unexpectedly."
+              echo "===== Kraft log ====="
               cat kraft.log
               exit 1
             fi
@@ -93,16 +99,22 @@ jobs:
           echo "===== Kraft log ====="
           cat kraft.log
 
-          if [ ! -f response.txt ]; then
-            echo "Skipper HTTP server did not become ready."
-            exit 1
-          fi
+          echo "===== HTTP status ====="
+          echo "$HTTP_STATUS"
 
           echo "===== HTTP response ====="
           cat response.txt
 
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "Unexpected HTTP status."
+            exit 1
+          fi
+
           if ! grep -q "Bye, World!" response.txt; then
             echo "Unexpected HTTP response."
+            echo "Expected: Bye, World!"
+            echo "Actual response:"
+            cat response.txt
             exit 1
           fi
 
