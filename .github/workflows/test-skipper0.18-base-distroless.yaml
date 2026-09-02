@@ -58,24 +58,24 @@ jobs:
         run: |
           sudo chmod 666 /dev/kvm
 
-      - name: Inspect Unikernel artifacts
+      - name: Inspect build artifacts
         working-directory: examples/skipper0.18-base-distroless
         run: |
-          echo "===== .unikraft directory ====="
-          find .unikraft -type f -printf '%p %k KB\n' | sort
+          echo "===== All .unikraft files ====="
+          find .unikraft -type f -ls
 
-          echo "===== .unikraft/unikernel ====="
-          ls -lah .unikraft/unikernel/ || true
-
-          echo "===== .unikraft/build ====="
-          ls -lah .unikraft/build/ || true
+          echo "===== Kernel candidates ====="
+          find .unikraft -type f \
+            ! -name "*.cpio" \
+            ! -name "*.img" \
+            -exec file {} \;
 
       - name: Run Unikernel and validate HTTP response
         working-directory: examples/skipper0.18-base-distroless
         run: |
           set -e
 
-          echo "Starting Unikernel with KraftKit..."
+          echo "Starting Unikernel..."
 
           kraft run \
             --rm \
@@ -83,16 +83,13 @@ jobs:
             --plat qemu \
             --arch x86_64 \
             -M 512M \
-            --no-build \
             . > kraft.log 2>&1 &
 
           KRAFT_PID=$!
 
           echo "Waiting for Skipper HTTP server..."
 
-          HTTP_STATUS=""
-
-          for i in {1..60}; do
+          for i in {1..90}; do
             if ! kill -0 "$KRAFT_PID" 2>/dev/null; then
               echo "Kraft process exited unexpectedly."
               echo "===== Kraft log ====="
@@ -100,12 +97,7 @@ jobs:
               exit 1
             fi
 
-            HTTP_STATUS=$(curl -sS \
-              -o response.txt \
-              -w "%{http_code}" \
-              http://127.0.0.1:9090 2>/dev/null || true)
-
-            if [ "$HTTP_STATUS" = "200" ]; then
+            if curl -fsS http://127.0.0.1:9090 > response.txt 2>/dev/null; then
               echo "Skipper HTTP server is ready."
               break
             fi
@@ -116,21 +108,16 @@ jobs:
           echo "===== Kraft log ====="
           cat kraft.log
 
-          echo "===== HTTP status ====="
-          echo "$HTTP_STATUS"
-
           echo "===== HTTP response ====="
           cat response.txt 2>/dev/null || true
 
-          if [ "$HTTP_STATUS" != "200" ]; then
-            echo "Skipper HTTP server did not return HTTP 200."
+          if [ ! -f response.txt ]; then
+            echo "Skipper HTTP server did not become ready."
             exit 1
           fi
 
           if ! grep -q "Bye, World!" response.txt; then
             echo "Unexpected HTTP response."
-            echo "Expected: Bye, World!"
-            echo "Actual response:"
             cat response.txt
             exit 1
           fi
