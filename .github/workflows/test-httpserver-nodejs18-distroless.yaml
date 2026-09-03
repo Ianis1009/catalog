@@ -1,89 +1,102 @@
-name: Test Node.js 18 HTTP Server Distroless
+name: Test httpserver-nodejs18-distroless
 
 on:
-  workflow_dispatch:
   push:
-    paths:
-      - "examples/httpserver-nodejs18-base-distroless/**"
-      - ".github/workflows/test-httpserver-nodejs18-distroless.yaml"
+    branches:
+      - test/httpserver-nodejs18-distroless-workflow
   pull_request:
     paths:
-      - "examples/httpserver-nodejs18-base-distroless/**"
+      - "examples/httpserver-nodejs18-distroless/**"
       - ".github/workflows/test-httpserver-nodejs18-distroless.yaml"
+  workflow_dispatch:
 
 jobs:
-  build-benchmark-test:
+  test:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install KraftKit
-        run: curl -sSfL https://get.kraftkit.sh | sudo DEBIAN_FRONTEND=noninteractive sh -s -- -y
-
-      - name: Build Unikernel
-        working-directory: examples/httpserver-nodejs18-base-distroless
-        run: kraft build --plat qemu --arch x86_64 .
-
-      - name: Measure RootFS Size
-        working-directory: examples/httpserver-nodejs18-base-distroless
-        run: |
-          du -sh .unikraft/build/ || true
-          find .unikraft/build/ -type f -name "*.img" -exec du -h {} + || true
-
-      - name: Run Trivy Vulnerability Scanner
-        uses: aquasecurity/trivy-action@master
-        with:
-          scan-type: "fs"
-          scan-ref: "examples/httpserver-nodejs18-base-distroless"
-          format: "table"
-          exit-code: "0"
-          severity: "CRITICAL,HIGH"
-
-      - name: Install QEMU and Grant Permissions
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-system-x86
-          sudo chmod 666 /dev/kvm
+          sudo apt-get install -y --no-install-recommends \
+            curl \
+            qemu-kvm \
+            qemu-system-x86
 
-      - name: Run and Validate Output
-        working-directory: examples/httpserver-nodejs18-base-distroless
+      - name: Install Trivy
         run: |
-          kraft run --rm -p 8080:8080 --plat qemu --arch x86_64 -M 512M > kraft.log 2>&1 &
+          sudo apt-get install -y wget gnupg
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | \
+            gpg --dearmor | \
+            sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | \
+            sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+
+      - name: Install KraftKit
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://get.kraftkit.sh | sudo sh
+
+      - name: Build example
+        working-directory: examples/httpserver-nodejs18-distroless
+        run: |
+          kraft build .
+
+      - name: Inspect build artifacts
+        working-directory: examples/httpserver-nodejs18-distroless
+        run: |
+          echo "Build artifacts:"
+          find .unikraft -maxdepth 3 -type f -print -exec ls -lh {} \;
+
+      - name: Scan build artifacts
+        working-directory: examples/httpserver-nodejs18-distroless
+        run: |
+          trivy fs --no-progress --exit-code 0 .unikraft
+
+      - name: Test with QEMU
+        working-directory: examples/httpserver-nodejs18-distroless
+        run: |
+          set -e
+
+          kraft run \
+            --rm \
+            -p 8080:8080 \
+            --plat qemu \
+            --arch x86_64 \
+            -M 512M \
+            . > kraft-run.log 2>&1 &
+
           KRAFT_PID=$!
 
-          echo "Waiting for HTTP server..."
+          cleanup() {
+            kill "$KRAFT_PID" 2>/dev/null || true
+          }
 
-          for i in {1..30}; do
-            if curl -fsS http://localhost:8080 > response.txt 2>/dev/null; then
+          trap cleanup EXIT
+
+          for i in $(seq 1 45); do
+            if curl -fsS http://127.0.0.1:8080 > response.txt 2>/dev/null; then
+              echo "HTTP server is ready."
               break
             fi
 
-            if ! kill -0 $KRAFT_PID 2>/dev/null; then
+            if ! kill -0 "$KRAFT_PID" 2>/dev/null; then
               echo "Kraft process exited unexpectedly."
-              cat kraft.log
+              cat kraft-run.log
               exit 1
             fi
 
             sleep 2
           done
 
-          cat kraft.log
-
-          if [ ! -f response.txt ]; then
-            echo "HTTP server did not become available."
-            exit 1
-          fi
-
-          if ! grep -q "Bye, World!" response.txt; then
-            echo "Unexpected HTTP response:"
-            cat response.txt
-            exit 1
-          fi
-
-          echo "HTTP response validated successfully:"
           cat response.txt
 
-          kill $KRAFT_PID 2>/dev/null || true
-          wait $KRAFT_PID 2>/dev/null || true
+          grep -Fxq "Bye, World!" response.txt
+
+          echo "httpserver-nodejs18-distroless test passed."
+
+          cat kraft-run.log
