@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - "examples/httpserver-nodejs18-distroless/**"
+      - ".github/workflows/test-httpserver-nodejs18-distroless.yml"
 
 jobs:
   build-benchmark-test:
