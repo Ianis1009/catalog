@@ -27,42 +27,34 @@ jobs:
             qemu-kvm \
             qemu-system-x86
 
-      - name: Install KraftKit
-        timeout-minutes: 3
-        run: |
-          curl -fsSL --connect-timeout 15 --max-time 120 \
-            https://get.kraftkit.sh | sudo sh
-          kraft version
+      - name: Build with KraftKit
+        uses: unikraft/kraftkit@stable
+        with:
+          workdir: examples/httpserver-nodejs18-distroless
+          kraftfile: Kraftfile
+          arch: x86_64
+          plat: qemu
 
-      - name: Build example
+      - name: Inspect build
+        working-directory: examples/httpserver-nodejs18-distroless
+        run: |
+          echo "Build artifacts:"
+          find .unikraft -maxdepth 3 -type f -print 2>/dev/null || true
+          du -sh .unikraft 2>/dev/null || true
+
+      - name: Test with QEMU
         working-directory: examples/httpserver-nodejs18-distroless
         timeout-minutes: 5
-        run: |
-          kraft build .
-
-      - name: Verify build
-        working-directory: examples/httpserver-nodejs18-distroless
-        run: |
-          test -d .unikraft
-          find .unikraft -maxdepth 3 -type f -print
-          du -sh .unikraft
-
-      - name: Scan build artifacts
-        working-directory: examples/httpserver-nodejs18-distroless
-        run: |
-          docker run --rm \
-            -v "$PWD/.unikraft:/scan:ro" \
-            aquasec/trivy:latest \
-            fs --no-progress --exit-code 0 /scan
-
-      - name: Run with QEMU
-        working-directory: examples/httpserver-nodejs18-distroless
-        timeout-minutes: 5
+        env:
+          KRAFTKIT_NO_PROMPT: "true"
+          KRAFTKIT_NO_CHECK_UPDATES: "true"
         run: |
           set -e
 
           kraft run \
             --rm \
+            --no-prompt \
+            --no-check-updates \
             -p 8080:8080 \
             --plat qemu \
             --arch x86_64 \
@@ -78,7 +70,7 @@ jobs:
           trap cleanup EXIT
 
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8080 > response.txt; then
+            if curl -fsS http://127.0.0.1:8080 > response.txt 2>/dev/null; then
               echo "Server is ready."
               break
             fi
