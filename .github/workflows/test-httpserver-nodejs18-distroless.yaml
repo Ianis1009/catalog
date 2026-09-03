@@ -1,4 +1,4 @@
-name: Test httpserver-nodejs18-distroless
+\name: Test httpserver-nodejs18-distroless
 
 on:
   push:
@@ -19,79 +19,51 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Build
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            curl \
-            qemu-kvm \
-            qemu-system-x86
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace/examples/httpserver-nodejs18-distroless \
+            kraftkit.sh/base:latest \
+            kraft build .
 
-      - name: Build with KraftKit
-        uses: unikraft/kraftkit@stable
-        with:
-          workdir: examples/httpserver-nodejs18-distroless
-          kraftfile: Kraftfile
-          arch: x86_64
-          plat: qemu
-
-      - name: Inspect build
-        working-directory: examples/httpserver-nodejs18-distroless
+      - name: Check build
         run: |
-          echo "Build artifacts:"
-          find .unikraft -maxdepth 3 -type f -print 2>/dev/null || true
-          du -sh .unikraft 2>/dev/null || true
+          test -d examples/httpserver-nodejs18-distroless/.unikraft
+          du -sh examples/httpserver-nodejs18-distroless/.unikraft
+          find examples/httpserver-nodejs18-distroless/.unikraft -maxdepth 3 -type f -print
 
-      - name: Test with QEMU
-        working-directory: examples/httpserver-nodejs18-distroless
-        timeout-minutes: 5
-        env:
-          KRAFTKIT_NO_PROMPT: "true"
-          KRAFTKIT_NO_CHECK_UPDATES: "true"
+      - name: Scan
         run: |
-          set -e
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/examples/httpserver-nodejs18-distroless/.unikraft:/scan:ro" \
+            aquasec/trivy:latest \
+            fs --no-progress --exit-code 0 /scan
 
-          kraft run \
-            --rm \
-            --no-prompt \
-            --no-check-updates \
+      - name: Run with QEMU
+        run: |
+          docker run --rm \
+            --privileged \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace/examples/httpserver-nodejs18-distroless \
             -p 8080:8080 \
-            --plat qemu \
-            --arch x86_64 \
-            -M 512M \
-            . > kraft-run.log 2>&1 &
+            kraftkit.sh/base:latest \
+            kraft run \
+              --no-prompt \
+              --no-check-updates \
+              --plat qemu \
+              --arch x86_64 \
+              -M 512M \
+              .
 
-          KRAFT_PID=$!
-
-          cleanup() {
-            kill "$KRAFT_PID" 2>/dev/null || true
-          }
-
-          trap cleanup EXIT
-
+      - name: Test HTTP server
+        run: |
           for i in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8080 > response.txt 2>/dev/null; then
-              echo "Server is ready."
+            if curl -fsS http://127.0.0.1:8080 > response.txt; then
               break
             fi
-
-            if ! kill -0 "$KRAFT_PID" 2>/dev/null; then
-              echo "Kraft exited unexpectedly."
-              cat kraft-run.log
-              exit 1
-            fi
-
             sleep 2
           done
 
-          test -s response.txt
           cat response.txt
           grep -Fxq "Bye, World!" response.txt
-
-          echo "httpserver-nodejs18-distroless test passed."
-
-      - name: Show Kraft logs
-        if: always()
-        working-directory: examples/httpserver-nodejs18-distroless
-        run: |
-          cat kraft-run.log 2>/dev/null || true
