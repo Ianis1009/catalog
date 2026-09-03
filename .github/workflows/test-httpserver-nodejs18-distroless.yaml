@@ -13,6 +13,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
 
     steps:
       - name: Checkout repository
@@ -26,39 +27,37 @@ jobs:
             qemu-kvm \
             qemu-system-x86
 
-      - name: Install Trivy
-        run: |
-          sudo apt-get install -y wget gnupg
-          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | \
-            gpg --dearmor | \
-            sudo tee /usr/share/keyrings/trivy.gpg > /dev/null
-          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb generic main" | \
-            sudo tee /etc/apt/sources.list.d/trivy.list
-          sudo apt-get update
-          sudo apt-get install -y trivy
-
       - name: Install KraftKit
+        timeout-minutes: 3
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://get.kraftkit.sh | sudo sh
+          curl -fsSL --connect-timeout 15 --max-time 120 \
+            https://get.kraftkit.sh | sudo sh
+          kraft version
 
       - name: Build example
         working-directory: examples/httpserver-nodejs18-distroless
+        timeout-minutes: 5
         run: |
           kraft build .
 
-      - name: Inspect build artifacts
+      - name: Verify build
         working-directory: examples/httpserver-nodejs18-distroless
         run: |
-          echo "Build artifacts:"
-          find .unikraft -maxdepth 3 -type f -print -exec ls -lh {} \;
+          test -d .unikraft
+          find .unikraft -maxdepth 3 -type f -print
+          du -sh .unikraft
 
       - name: Scan build artifacts
         working-directory: examples/httpserver-nodejs18-distroless
         run: |
-          trivy fs --no-progress --exit-code 0 .unikraft
+          docker run --rm \
+            -v "$PWD/.unikraft:/scan:ro" \
+            aquasec/trivy:latest \
+            fs --no-progress --exit-code 0 /scan
 
-      - name: Test with QEMU
+      - name: Run with QEMU
         working-directory: examples/httpserver-nodejs18-distroless
+        timeout-minutes: 5
         run: |
           set -e
 
@@ -78,14 +77,14 @@ jobs:
 
           trap cleanup EXIT
 
-          for i in $(seq 1 45); do
-            if curl -fsS http://127.0.0.1:8080 > response.txt 2>/dev/null; then
-              echo "HTTP server is ready."
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8080 > response.txt; then
+              echo "Server is ready."
               break
             fi
 
             if ! kill -0 "$KRAFT_PID" 2>/dev/null; then
-              echo "Kraft process exited unexpectedly."
+              echo "Kraft exited unexpectedly."
               cat kraft-run.log
               exit 1
             fi
@@ -93,10 +92,14 @@ jobs:
             sleep 2
           done
 
+          test -s response.txt
           cat response.txt
-
           grep -Fxq "Bye, World!" response.txt
 
           echo "httpserver-nodejs18-distroless test passed."
 
-          cat kraft-run.log
+      - name: Show Kraft logs
+        if: always()
+        working-directory: examples/httpserver-nodejs18-distroless
+        run: |
+          cat kraft-run.log 2>/dev/null || true
