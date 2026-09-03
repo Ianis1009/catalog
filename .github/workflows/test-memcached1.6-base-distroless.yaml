@@ -13,6 +13,7 @@ on:
 
 jobs:
   build-test:
+    name: Build and test Memcached 1.6 Base Distroless
     runs-on: ubuntu-latest
 
     steps:
@@ -144,7 +145,7 @@ jobs:
                 nc -w 3 127.0.0.1 11211 2>/dev/null || true
             )"
 
-            if echo "$VERSION_OUTPUT" | grep -Fq "VERSION 1.6.23"; then
+            if echo "$VERSION_OUTPUT" | tr -d '\r' | grep -Fq "VERSION 1.6.23"; then
               echo "Memcached is ready."
               break
             fi
@@ -158,11 +159,16 @@ jobs:
           echo "===== Memcached version ====="
           printf '%s\n' "$VERSION_OUTPUT"
 
-          if ! echo "$VERSION_OUTPUT" | grep -Fq "VERSION 1.6.23"; then
+          VERSION_CLEAN="$(
+            printf '%s\n' "$VERSION_OUTPUT" |
+              tr -d '\r'
+          )"
+
+          if ! printf '%s\n' "$VERSION_CLEAN" | grep -Fq "VERSION 1.6.23"; then
             echo "ERROR: Memcached did not return the expected version."
             echo "Expected: VERSION 1.6.23"
             echo "Received:"
-            printf '%s\n' "$VERSION_OUTPUT"
+            printf '%s\n' "$VERSION_CLEAN"
             exit 1
           fi
 
@@ -177,24 +183,33 @@ jobs:
 
           printf '%s\n' "$RESPONSE"
 
+          echo "===== Normalized Memcached response ====="
+
+          RESPONSE_CLEAN="$(
+            printf '%s\n' "$RESPONSE" |
+              tr -d '\r'
+          )"
+
+          printf '%s\n' "$RESPONSE_CLEAN"
+
           echo "===== Validating Memcached response ====="
 
-          if ! echo "$RESPONSE" | grep -Fxq "STORED"; then
+          if ! printf '%s\n' "$RESPONSE_CLEAN" | grep -Fxq "STORED"; then
             echo "ERROR: Missing STORED response."
             exit 1
           fi
 
-          if ! echo "$RESPONSE" | grep -Fxq "VALUE test 0 5"; then
+          if ! printf '%s\n' "$RESPONSE_CLEAN" | grep -Fxq "VALUE test 0 5"; then
             echo "ERROR: Missing VALUE response."
             exit 1
           fi
 
-          if ! echo "$RESPONSE" | grep -Fxq "hello"; then
+          if ! printf '%s\n' "$RESPONSE_CLEAN" | grep -Fxq "hello"; then
             echo "ERROR: Missing stored value."
             exit 1
           fi
 
-          if ! echo "$RESPONSE" | grep -Fxq "END"; then
+          if ! printf '%s\n' "$RESPONSE_CLEAN" | grep -Fxq "END"; then
             echo "ERROR: Missing END response."
             exit 1
           fi
