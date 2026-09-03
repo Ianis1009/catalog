@@ -1,0 +1,174 @@
+name: Test Caddy 2.7 Go 1.21 Base Distroless
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "examples/caddy2.7-go1.21-base-distroless/**"
+      - ".github/workflows/test-caddy2.7-go1.21-base-distroless.yaml"
+  pull_request:
+    paths:
+      - "examples/caddy2.7-go1.21-base-distroless/**"
+      - ".github/workflows/test-caddy2.7-go1.21-base-distroless.yaml"
+
+jobs:
+  build-test:
+    name: Build and test Caddy 2.7 Go 1.21 Base Distroless
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          set -eux
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            ca-certificates \
+            qemu-system-x86 \
+            qemu-utils
+
+      - name: Install KraftKit
+        run: |
+          set -eux
+
+          curl -sSfL https://get.kraftkit.sh | \
+            sudo DEBIAN_FRONTEND=noninteractive sh -s -- -y
+
+      - name: Verify KraftKit
+        run: |
+          set -eux
+
+          command -v kraft
+          kraft version
+
+      - name: Build Unikernel
+        working-directory: examples/caddy2.7-go1.21-base-distroless
+        run: |
+          set -eux
+
+          kraft build \
+            --plat qemu \
+            --arch x86_64 \
+            .
+
+      - name: Measure rootfs size
+        working-directory: examples/caddy2.7-go1.21-base-distroless
+        run: |
+          echo "===== Build directory ====="
+          du -sh .unikraft/build/ || true
+
+          echo "===== Image/rootfs files ====="
+          find .unikraft/build/ -type f \
+            \( -name "*.img" -o -name "*.cpio" \) \
+            -exec du -h {} + || true
+
+      - name: Scan for vulnerabilities
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          scan-ref: examples/caddy2.7-go1.21-base-distroless
+          format: table
+          exit-code: "0"
+          severity: CRITICAL,HIGH
+
+      - name: Inspect build artifacts
+        working-directory: examples/caddy2.7-go1.21-base-distroless
+        run: |
+          set -eux
+
+          echo "===== .unikraft/build ====="
+          find .unikraft/build -maxdepth 3 -type f -print | sort
+
+          echo "===== Build directory size ====="
+          du -sh .unikraft/build
+
+      - name: Enable KVM
+        run: |
+          set -eux
+
+          sudo chmod 666 /dev/kvm
+
+      - name: Run Unikernel and test Caddy
+        working-directory: examples/caddy2.7-go1.21-base-distroless
+        run: |
+          set -e
+
+          rm -f kraft.log
+
+          echo "===== Kraft version ====="
+          kraft version
+
+          echo "===== Starting Caddy Unikernel ====="
+
+          kraft run \
+            --rm \
+            -p 2015:2015 \
+            --plat qemu \
+            --arch x86_64 \
+            -M 256M \
+            . > kraft.log 2>&1 &
+
+          KRAFT_PID=$!
+
+          cleanup() {
+            echo "===== Stopping Unikraft ====="
+
+            if kill -0 "$KRAFT_PID" 2>/dev/null; then
+              kill "$KRAFT_PID" 2>/dev/null || true
+              sleep 2
+            fi
+
+            wait "$KRAFT_PID" 2>/dev/null || true
+          }
+
+          trap cleanup EXIT
+
+          echo "===== Waiting for Caddy ====="
+
+          RESPONSE=""
+
+          for i in $(seq 1 90); do
+            if ! kill -0 "$KRAFT_PID" 2>/dev/null; then
+              echo "ERROR: Unikraft exited before Caddy became ready."
+              echo "===== Kraft log ====="
+              cat kraft.log || true
+              exit 1
+            fi
+
+            RESPONSE="$(
+              curl -fsS \
+                --max-time 3 \
+                http://127.0.0.1:2015 2>/dev/null || true
+            )"
+
+            if printf '%s\n' "$RESPONSE" | grep -Fq "Bye, World!"; then
+              echo "Caddy is ready."
+              break
+            fi
+
+            sleep 1
+          done
+
+          echo "===== Kraft log ====="
+          cat kraft.log || true
+
+          echo "===== HTTP response ====="
+          printf '%s\n' "$RESPONSE"
+
+          if ! printf '%s\n' "$RESPONSE" | grep -Fq "Bye, World!"; then
+            echo "ERROR: Caddy did not return the expected response."
+            echo "Expected: Bye, World!"
+            echo "Received:"
+            printf '%s\n' "$RESPONSE"
+            exit 1
+          fi
+
+          echo "Caddy HTTP test passed."
+
+          echo "========================================="
+          echo " Caddy 2.7.5 test PASSED"
+          echo "========================================="
