@@ -129,14 +129,9 @@ jobs:
 
           echo "===== Waiting for Memcached ====="
 
-          READY=0
+          VERSION_OUTPUT=""
 
           for i in $(seq 1 90); do
-            if nc -z 127.0.0.1 11211 2>/dev/null; then
-              READY=1
-              break
-            fi
-
             if ! kill -0 "$KRAFT_PID" 2>/dev/null; then
               echo "ERROR: Unikraft exited before Memcached became ready."
               echo "===== Kraft log ====="
@@ -144,42 +139,40 @@ jobs:
               exit 1
             fi
 
+            VERSION_OUTPUT="$(
+              printf 'version\r\n' |
+                nc -w 3 127.0.0.1 11211 2>/dev/null || true
+            )"
+
+            if echo "$VERSION_OUTPUT" | grep -Fq "VERSION 1.6.23"; then
+              echo "Memcached is ready."
+              break
+            fi
+
             sleep 1
           done
-
-          if [ "$READY" -ne 1 ]; then
-            echo "ERROR: Memcached did not become ready."
-            echo "===== Kraft log ====="
-            cat kraft.log || true
-            exit 1
-          fi
-
-          echo "Memcached is ready."
 
           echo "===== Kraft log ====="
           cat kraft.log || true
 
-          echo "===== Testing Memcached version ====="
-
-          VERSION_OUTPUT="$(
-            printf 'version\r\n' |
-              nc -w 3 127.0.0.1 11211
-          )"
-
+          echo "===== Memcached version ====="
           printf '%s\n' "$VERSION_OUTPUT"
 
           if ! echo "$VERSION_OUTPUT" | grep -Fq "VERSION 1.6.23"; then
-            echo "ERROR: Unexpected Memcached version."
+            echo "ERROR: Memcached did not return the expected version."
+            echo "Expected: VERSION 1.6.23"
+            echo "Received:"
+            printf '%s\n' "$VERSION_OUTPUT"
             exit 1
           fi
 
           echo "Memcached version validated successfully."
 
-          echo "===== Testing Memcached set/get ====="
+          echo "===== Memcached functional test ====="
 
           RESPONSE="$(
             printf 'set test 0 0 5\r\nhello\r\nget test\r\nquit\r\n' |
-              nc -w 3 127.0.0.1 11211
+              nc -w 5 127.0.0.1 11211
           )"
 
           printf '%s\n' "$RESPONSE"
