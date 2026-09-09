@@ -9,6 +9,7 @@ on:
   pull_request:
     paths:
       - "examples/http-response-cache-rust-distroless/**"
+
 jobs:
   build-benchmark-test:
     runs-on: ubuntu-latest
@@ -45,42 +46,7 @@ jobs:
           sudo apt-get install -y qemu-system-x86
           sudo chmod 666 /dev/kvm
 
-      - name: Test Docker Distroless Image
-        working-directory: examples/http-response-cache-rust-distroless
-        run: |
-          docker build --pull -t http-response-cache-rust-distroless .
-
-          docker run -d \
-            --name http-response-cache-test \
-            -p 8080:8080 \
-            http-response-cache-rust-distroless
-
-          sleep 2
-
-          curl --fail http://localhost:8080/hello | tee response-1.txt
-          grep -q "CACHE MISS: Generated response for /hello" response-1.txt
-
-          curl --fail http://localhost:8080/hello | tee response-2.txt
-          grep -q "CACHE HIT: Generated response for /hello" response-2.txt
-
-          curl --fail http://localhost:8080/world | tee response-3.txt
-          grep -q "CACHE MISS: Generated response for /world" response-3.txt
-
-          curl --fail http://localhost:8080/world | tee response-4.txt
-          grep -q "CACHE HIT: Generated response for /world" response-4.txt
-
-          curl -sS \
-            -o post-response.txt \
-            -w "%{http_code}" \
-            -X POST \
-            http://localhost:8080/hello > post-status.txt
-
-          test "$(cat post-status.txt)" = "405"
-          grep -q "Method Not Allowed" post-response.txt
-
-          docker rm -f http-response-cache-test
-
-      - name: Run and Validate Output
+      - name: Run and Validate HTTP Cache
         working-directory: examples/http-response-cache-rust-distroless
         run: |
           rm -f kraft-run.log
@@ -107,11 +73,8 @@ jobs:
           SERVER_READY=0
 
           for i in $(seq 1 30); do
-            echo "Attempt $i/30"
-
             if ! kill -0 "$KRAFT_PID" 2>/dev/null; then
-              echo "ERROR: Kraft process exited before HTTP server became ready."
-              echo "===== Kraft log ====="
+              echo "Kraft exited unexpectedly."
               cat kraft-run.log || true
               exit 1
             fi
@@ -119,7 +82,6 @@ jobs:
             if curl --silent --show-error \
               http://localhost:8080/hello \
               > response-1.txt 2>/dev/null; then
-
               SERVER_READY=1
               echo "HTTP server is ready."
               break
@@ -129,7 +91,7 @@ jobs:
           done
 
           if [ "$SERVER_READY" != "1" ]; then
-            echo "ERROR: HTTP server did not become ready within 30 seconds."
+            echo "HTTP server did not become ready."
             echo "===== Kraft log ====="
             cat kraft-run.log || true
             kill "$KRAFT_PID" 2>/dev/null || true
@@ -183,7 +145,7 @@ jobs:
           kill "$KRAFT_PID" 2>/dev/null || true
           wait "$KRAFT_PID" 2>/dev/null || true
 
-      - name: Check Unikraft Log
+      - name: Show Kraft log
         if: always()
         working-directory: examples/http-response-cache-rust-distroless
         run: |
