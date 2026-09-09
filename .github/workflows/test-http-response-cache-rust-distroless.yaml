@@ -48,6 +48,7 @@ jobs:
 
       - name: Run and Validate HTTP Cache
         working-directory: examples/http-response-cache-rust-distroless
+        timeout-minutes: 2
         run: |
           rm -f kraft-run.log
           rm -f response-1.txt
@@ -55,7 +56,6 @@ jobs:
           rm -f response-3.txt
           rm -f response-4.txt
           rm -f post-response.txt
-          rm -f post-status.txt
 
           kraft run \
             --rm \
@@ -68,25 +68,30 @@ jobs:
           KRAFT_PID=$!
 
           echo "Kraft PID: $KRAFT_PID"
-          echo "Waiting for Unikraft HTTP server..."
+          echo "Waiting for HTTP server..."
 
           SERVER_READY=0
 
           for i in $(seq 1 30); do
-            if ! kill -0 "$KRAFT_PID" 2>/dev/null; then
-              echo "Kraft exited unexpectedly."
-              cat kraft-run.log || true
-              exit 1
-            fi
-
-            if curl --silent --show-error \
-              http://localhost:8080/hello \
+            if curl \
+              --silent \
+              --show-error \
+              --fail \
+              http://127.0.0.1:8080/hello \
               > response-1.txt 2>/dev/null; then
               SERVER_READY=1
               echo "HTTP server is ready."
               break
             fi
 
+            if ! kill -0 "$KRAFT_PID" 2>/dev/null; then
+              echo "Kraft exited unexpectedly."
+              echo "===== Kraft log ====="
+              cat kraft-run.log || true
+              exit 1
+            fi
+
+            echo "Attempt $i/30: server not ready yet..."
             sleep 1
           done
 
@@ -95,46 +100,59 @@ jobs:
             echo "===== Kraft log ====="
             cat kraft-run.log || true
             kill "$KRAFT_PID" 2>/dev/null || true
-            wait "$KRAFT_PID" 2>/dev/null || true
             exit 1
           fi
 
+          echo "Testing first /hello request..."
           grep -q \
             "CACHE MISS: Generated response for /hello" \
             response-1.txt
 
-          curl --fail \
-            http://localhost:8080/hello \
-            | tee response-2.txt
+          echo "Testing second /hello request..."
+          curl \
+            --silent \
+            --show-error \
+            --fail \
+            http://127.0.0.1:8080/hello \
+            > response-2.txt
 
           grep -q \
             "CACHE HIT: Generated response for /hello" \
             response-2.txt
 
-          curl --fail \
-            http://localhost:8080/world \
-            | tee response-3.txt
+          echo "Testing first /world request..."
+          curl \
+            --silent \
+            --show-error \
+            --fail \
+            http://127.0.0.1:8080/world \
+            > response-3.txt
 
           grep -q \
             "CACHE MISS: Generated response for /world" \
             response-3.txt
 
-          curl --fail \
-            http://localhost:8080/world \
-            | tee response-4.txt
+          echo "Testing second /world request..."
+          curl \
+            --silent \
+            --show-error \
+            --fail \
+            http://127.0.0.1:8080/world \
+            > response-4.txt
 
           grep -q \
             "CACHE HIT: Generated response for /world" \
             response-4.txt
 
-          curl -sS \
-            -o post-response.txt \
-            -w "%{http_code}" \
-            -X POST \
-            http://localhost:8080/hello \
-            > post-status.txt
+          echo "Testing POST returns 405..."
+          POST_STATUS=$(curl \
+            --silent \
+            --output post-response.txt \
+            --write-out "%{http_code}" \
+            --request POST \
+            http://127.0.0.1:8080/hello)
 
-          test "$(cat post-status.txt)" = "405"
+          test "$POST_STATUS" = "405"
 
           grep -q \
             "Method Not Allowed" \
@@ -143,13 +161,13 @@ jobs:
           echo "All HTTP cache tests passed."
 
           kill "$KRAFT_PID" 2>/dev/null || true
-          wait "$KRAFT_PID" 2>/dev/null || true
 
       - name: Show Kraft log
         if: always()
         working-directory: examples/http-response-cache-rust-distroless
         run: |
           if [ -f kraft-run.log ]; then
+            echo "===== Kraft run log ====="
             cat kraft-run.log
           fi
 
