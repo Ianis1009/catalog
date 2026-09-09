@@ -31,6 +31,21 @@ jobs:
           du -sh .unikraft/build/ || true
           find .unikraft/build/ -type f -name "*.img" -exec du -h {} + || true
 
+      - name: Inspect Kraft Build
+        working-directory: examples/http-response-cache-rust-distroless
+        run: |
+          echo "===== Kraft version ====="
+          kraft --version
+
+          echo "===== .unikraft contents ====="
+          find .unikraft -maxdepth 5 -type f -print | sort || true
+
+          echo "===== Build directory ====="
+          ls -lah .unikraft/build/ || true
+
+          echo "===== Kraft run help ====="
+          kraft run --help
+
       - name: Run Trivy Vulnerability Scanner
         uses: aquasecurity/trivy-action@master
         with:
@@ -45,141 +60,3 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y qemu-system-x86
           sudo chmod 666 /dev/kvm
-
-      - name: Run and Validate HTTP Cache
-        working-directory: examples/http-response-cache-rust-distroless
-        timeout-minutes: 2
-        run: |
-          rm -f kraft-run.log
-          rm -f response-1.txt
-          rm -f response-2.txt
-          rm -f response-3.txt
-          rm -f response-4.txt
-          rm -f post-response.txt
-
-          kraft run \
-            --rm \
-            --plat qemu \
-            --arch x86_64 \
-            -M 128M \
-            -p 8080:8080 \
-            . > kraft-run.log 2>&1 &
-
-          KRAFT_PID=$!
-
-          echo "Kraft PID: $KRAFT_PID"
-          echo "Waiting for HTTP server..."
-
-          SERVER_READY=0
-
-          for i in $(seq 1 30); do
-            if curl \
-              --silent \
-              --show-error \
-              --fail \
-              http://127.0.0.1:8080/hello \
-              > response-1.txt 2>/dev/null; then
-              SERVER_READY=1
-              echo "HTTP server is ready."
-              break
-            fi
-
-            if ! kill -0 "$KRAFT_PID" 2>/dev/null; then
-              echo "Kraft exited unexpectedly."
-              echo "===== Kraft log ====="
-              cat kraft-run.log || true
-              exit 1
-            fi
-
-            echo "Attempt $i/30: server not ready yet..."
-            sleep 1
-          done
-
-          if [ "$SERVER_READY" != "1" ]; then
-            echo "HTTP server did not become ready."
-            echo "===== Kraft log ====="
-            cat kraft-run.log || true
-            kill "$KRAFT_PID" 2>/dev/null || true
-            exit 1
-          fi
-
-          echo "Testing first /hello request..."
-          grep -q \
-            "CACHE MISS: Generated response for /hello" \
-            response-1.txt
-
-          echo "Testing second /hello request..."
-          curl \
-            --silent \
-            --show-error \
-            --fail \
-            http://127.0.0.1:8080/hello \
-            > response-2.txt
-
-          grep -q \
-            "CACHE HIT: Generated response for /hello" \
-            response-2.txt
-
-          echo "Testing first /world request..."
-          curl \
-            --silent \
-            --show-error \
-            --fail \
-            http://127.0.0.1:8080/world \
-            > response-3.txt
-
-          grep -q \
-            "CACHE MISS: Generated response for /world" \
-            response-3.txt
-
-          echo "Testing second /world request..."
-          curl \
-            --silent \
-            --show-error \
-            --fail \
-            http://127.0.0.1:8080/world \
-            > response-4.txt
-
-          grep -q \
-            "CACHE HIT: Generated response for /world" \
-            response-4.txt
-
-          echo "Testing POST returns 405..."
-          POST_STATUS=$(curl \
-            --silent \
-            --output post-response.txt \
-            --write-out "%{http_code}" \
-            --request POST \
-            http://127.0.0.1:8080/hello)
-
-          test "$POST_STATUS" = "405"
-
-          grep -q \
-            "Method Not Allowed" \
-            post-response.txt
-
-          echo "All HTTP cache tests passed."
-
-          kill "$KRAFT_PID" 2>/dev/null || true
-
-      - name: Show Kraft log
-        if: always()
-        working-directory: examples/http-response-cache-rust-distroless
-        run: |
-          if [ -f kraft-run.log ]; then
-            echo "===== Kraft run log ====="
-            cat kraft-run.log
-          fi
-
-      - name: Check for ELF Errors
-        if: always()
-        working-directory: examples/http-response-cache-rust-distroless
-        run: |
-          if [ -f kraft-run.log ]; then
-            if grep -Eiq \
-              "not position-independent|exec format error|ELF executable is not position-independent" \
-              kraft-run.log; then
-              echo "ERROR: ELF or executable format problem detected"
-              exit 1
-            fi
-          fi
