@@ -1,3 +1,4 @@
+
 name: Test http-response-cache-rust-distroless
 
 on:
@@ -109,16 +110,35 @@ jobs:
       - name: Install KraftKit
         run: |
           curl --fail --location https://get.kraftkit.sh | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+          echo "Checking KraftKit installation..."
+
+          if [ -x "$HOME/.local/bin/kraft" ]; then
+            echo "Found KraftKit at $HOME/.local/bin/kraft"
+          elif command -v kraft >/dev/null 2>&1; then
+            echo "Found KraftKit at $(command -v kraft)"
+          else
+            echo "ERROR: KraftKit was not installed"
+            find "$HOME" -type f -name kraft -perm -111 2>/dev/null || true
+            exit 1
+          fi
 
       - name: Check KraftKit
         run: |
-          kraft version
+          if [ -x "$HOME/.local/bin/kraft" ]; then
+            "$HOME/.local/bin/kraft" version
+          else
+            kraft version
+          fi
 
       - name: Build Unikraft application
         working-directory: examples/http-response-cache-rust-distroless
         run: |
-          kraft build --plat qemu --arch x86_64 .
+          if [ -x "$HOME/.local/bin/kraft" ]; then
+            "$HOME/.local/bin/kraft" build --plat qemu --arch x86_64 .
+          else
+            kraft build --plat qemu --arch x86_64 .
+          fi
 
       - name: Check generated rootfs
         working-directory: examples/http-response-cache-rust-distroless
@@ -142,7 +162,13 @@ jobs:
       - name: Run Unikraft application
         working-directory: examples/http-response-cache-rust-distroless
         run: |
-          timeout 60s kraft run \
+          if [ -x "$HOME/.local/bin/kraft" ]; then
+            KRAFT="$HOME/.local/bin/kraft"
+          else
+            KRAFT="kraft"
+          fi
+
+          timeout 60s "$KRAFT" run \
             --rm \
             --plat qemu \
             --arch x86_64 \
@@ -152,13 +178,18 @@ jobs:
           
           KRAFT_PID=$!
 
+          echo "Waiting for HTTP server..."
+
           for i in $(seq 1 30); do
             if curl -s http://localhost:8080/hello > /tmp/response.txt 2>/dev/null; then
+              echo "HTTP server is ready."
               break
             fi
+
             sleep 1
           done
 
+          test -f /tmp/response.txt
           grep -q 'CACHE MISS: Generated response for /hello' /tmp/response.txt
 
           curl --fail http://localhost:8080/hello | tee /tmp/response-2.txt
