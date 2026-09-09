@@ -31,21 +31,6 @@ jobs:
           du -sh .unikraft/build/ || true
           find .unikraft/build/ -type f -name "*.img" -exec du -h {} + || true
 
-      - name: Inspect Kraft Build
-        working-directory: examples/http-response-cache-rust-distroless
-        run: |
-          echo "===== Kraft version ====="
-          kraft --version
-
-          echo "===== .unikraft contents ====="
-          find .unikraft -maxdepth 5 -type f -print | sort || true
-
-          echo "===== Build directory ====="
-          ls -lah .unikraft/build/ || true
-
-          echo "===== Kraft run help ====="
-          kraft run --help
-
       - name: Run Trivy Vulnerability Scanner
         uses: aquasecurity/trivy-action@master
         with:
@@ -55,8 +40,56 @@ jobs:
           exit-code: "0"
           severity: "CRITICAL,HIGH"
 
-      - name: Install QEMU and Grant Permissions
+      - name: Build Docker Image
+        working-directory: examples/http-response-cache-rust-distroless
+        run: docker build -t http-response-cache-rust-distroless .
+
+      - name: Run Docker Container
         run: |
-          sudo apt-get update
-          sudo apt-get install -y qemu-system-x86
-          sudo chmod 666 /dev/kvm
+          docker run -d \
+            --name http-response-cache \
+            -p 8080:8080 \
+            http-response-cache-rust-distroless
+
+      - name: Validate HTTP Cache
+        run: |
+          for i in $(seq 1 30); do
+            if curl --silent --fail http://127.0.0.1:8080/hello > response-1.txt; then
+              break
+            fi
+            sleep 1
+          done
+
+          grep -q "CACHE MISS: Generated response for /hello" response-1.txt
+
+          curl --silent --fail \
+            http://127.0.0.1:8080/hello > response-2.txt
+
+          grep -q "CACHE HIT: Generated response for /hello" response-2.txt
+
+          curl --silent --fail \
+            http://127.0.0.1:8080/world > response-3.txt
+
+          grep -q "CACHE MISS: Generated response for /world" response-3.txt
+
+          curl --silent --fail \
+            http://127.0.0.1:8080/world > response-4.txt
+
+          grep -q "CACHE HIT: Generated response for /world" response-4.txt
+
+          STATUS=$(curl \
+            --silent \
+            --output post-response.txt \
+            --write-out "%{http_code}" \
+            --request POST \
+            http://127.0.0.1:8080/hello)
+
+          test "$STATUS" = "405"
+
+          grep -q "Method Not Allowed" post-response.txt
+
+          echo "HTTP response cache tests passed."
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f http-response-cache || true
