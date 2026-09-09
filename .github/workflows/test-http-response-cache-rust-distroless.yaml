@@ -5,11 +5,10 @@ on:
   push:
     paths:
       - "examples/http-response-cache-rust-distroless/**"
-      - ".github/workflows/test-http-response-cache-rust-distroless.yml"
+      - ".github/workflows/test-http-response-cache-rust-distroless.yaml"
   pull_request:
     paths:
       - "examples/http-response-cache-rust-distroless/**"
-
 jobs:
   build-benchmark-test:
     runs-on: ubuntu-latest
