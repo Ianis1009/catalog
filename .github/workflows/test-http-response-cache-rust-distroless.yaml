@@ -83,18 +83,44 @@ jobs:
       - name: Run and Validate Output
         working-directory: examples/http-response-cache-rust-distroless
         run: |
+          rm -f kraft-run.log
+          rm -f response-1.txt
+          rm -f response-2.txt
+          rm -f response-3.txt
+          rm -f response-4.txt
+          rm -f post-response.txt
+          rm -f post-status.txt
+
           kraft run \
             --rm \
+            --plat qemu \
+            --arch x86_64 \
             -M 128M \
             -p 8080:8080 \
             . > kraft-run.log 2>&1 &
 
           KRAFT_PID=$!
 
+          echo "Kraft PID: $KRAFT_PID"
           echo "Waiting for Unikraft HTTP server..."
 
+          SERVER_READY=0
+
           for i in $(seq 1 30); do
-            if curl -s http://localhost:8080/hello > response-1.txt 2>/dev/null; then
+            echo "Attempt $i/30"
+
+            if ! kill -0 "$KRAFT_PID" 2>/dev/null; then
+              echo "ERROR: Kraft process exited before HTTP server became ready."
+              echo "===== Kraft log ====="
+              cat kraft-run.log || true
+              exit 1
+            fi
+
+            if curl --silent --show-error \
+              http://localhost:8080/hello \
+              > response-1.txt 2>/dev/null; then
+
+              SERVER_READY=1
               echo "HTTP server is ready."
               break
             fi
@@ -102,26 +128,57 @@ jobs:
             sleep 1
           done
 
-          test -s response-1.txt
-          grep -q "CACHE MISS: Generated response for /hello" response-1.txt
+          if [ "$SERVER_READY" != "1" ]; then
+            echo "ERROR: HTTP server did not become ready within 30 seconds."
+            echo "===== Kraft log ====="
+            cat kraft-run.log || true
+            kill "$KRAFT_PID" 2>/dev/null || true
+            wait "$KRAFT_PID" 2>/dev/null || true
+            exit 1
+          fi
 
-          curl --fail http://localhost:8080/hello | tee response-2.txt
-          grep -q "CACHE HIT: Generated response for /hello" response-2.txt
+          grep -q \
+            "CACHE MISS: Generated response for /hello" \
+            response-1.txt
 
-          curl --fail http://localhost:8080/world | tee response-3.txt
-          grep -q "CACHE MISS: Generated response for /world" response-3.txt
+          curl --fail \
+            http://localhost:8080/hello \
+            | tee response-2.txt
 
-          curl --fail http://localhost:8080/world | tee response-4.txt
-          grep -q "CACHE HIT: Generated response for /world" response-4.txt
+          grep -q \
+            "CACHE HIT: Generated response for /hello" \
+            response-2.txt
+
+          curl --fail \
+            http://localhost:8080/world \
+            | tee response-3.txt
+
+          grep -q \
+            "CACHE MISS: Generated response for /world" \
+            response-3.txt
+
+          curl --fail \
+            http://localhost:8080/world \
+            | tee response-4.txt
+
+          grep -q \
+            "CACHE HIT: Generated response for /world" \
+            response-4.txt
 
           curl -sS \
             -o post-response.txt \
             -w "%{http_code}" \
             -X POST \
-            http://localhost:8080/hello > post-status.txt
+            http://localhost:8080/hello \
+            > post-status.txt
 
           test "$(cat post-status.txt)" = "405"
-          grep -q "Method Not Allowed" post-response.txt
+
+          grep -q \
+            "Method Not Allowed" \
+            post-response.txt
+
+          echo "All HTTP cache tests passed."
 
           kill "$KRAFT_PID" 2>/dev/null || true
           wait "$KRAFT_PID" 2>/dev/null || true
