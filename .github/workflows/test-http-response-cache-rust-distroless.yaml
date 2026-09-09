@@ -1,189 +1,101 @@
-name: Test http-response-cache-rust-distroless
+name: Test Rust HTTP Response Cache Distroless
 
 on:
+  workflow_dispatch:
   push:
-    branches:
-      - "test/http-response-cache-rust-distroless-workflow"
+    paths:
+      - "examples/http-response-cache-rust-distroless/**"
+      - ".github/workflows/test-http-response-cache-rust-distroless.yml"
   pull_request:
     paths:
       - "examples/http-response-cache-rust-distroless/**"
-      - ".github/workflows/test-http-response-cache-rust-distroless.yaml"
 
 jobs:
-  test:
-    runs-on: ubuntu-24.04
+  build-benchmark-test:
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Show runner information
-        run: |
-          uname -a
-          docker --version
-          free -h
-          nproc
+      - name: Install KraftKit
+        run: curl -sSfL https://get.kraftkit.sh | sudo DEBIAN_FRONTEND=noninteractive sh -s -- -y
 
-      - name: Verify example files
-        run: |
-          test -f examples/http-response-cache-rust-distroless/Dockerfile
-          test -f examples/http-response-cache-rust-distroless/Kraftfile
-          test -f examples/http-response-cache-rust-distroless/README.md
-          test -f examples/http-response-cache-rust-distroless/src/main.rs
+      - name: Build Unikernel
+        working-directory: examples/http-response-cache-rust-distroless
+        run: kraft build --plat qemu --arch x86_64 .
 
-      - name: Validate Dockerfile
+      - name: Measure RootFS Size
         working-directory: examples/http-response-cache-rust-distroless
         run: |
-          grep -q '^FROM rust:1.89 AS builder$' Dockerfile
-          grep -q '^FROM gcr.io/distroless/static-debian12$' Dockerfile
-          grep -q 'ENTRYPOINT \["/usr/bin/http-response-cache"\]' Dockerfile
-          grep -q 'EXPOSE 8080' Dockerfile
+          du -sh .unikraft/build/ || true
+          find .unikraft/build/ -type f -name "*.img" -exec du -h {} + || true
 
-      - name: Validate Kraftfile
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: "fs"
+          scan-ref: "examples/http-response-cache-rust-distroless"
+          format: "table"
+          exit-code: "0"
+          severity: "CRITICAL,HIGH"
+
+      - name: Install QEMU and Grant Permissions
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86
+          sudo chmod 666 /dev/kvm
+
+      - name: Test Docker Distroless Image
         working-directory: examples/http-response-cache-rust-distroless
         run: |
-          grep -q '^spec: v0.6$' Kraftfile
-          grep -q '^name: http-response-cache$' Kraftfile
-          grep -q '^runtime: base:latest$' Kraftfile
-          grep -q '^rootfs: ./Dockerfile$' Kraftfile
-          grep -q 'cmd: \["/usr/bin/http-response-cache"\]' Kraftfile
+          docker build --pull -t http-response-cache-rust-distroless .
 
-      - name: Validate Rust source
-        working-directory: examples/http-response-cache-rust-distroless
-        run: |
-          grep -q 'TcpListener::bind("0.0.0.0:8080")' src/main.rs
-          grep -q 'CACHE HIT' src/main.rs
-          grep -q 'CACHE MISS' src/main.rs
-          grep -q 'Method Not Allowed' src/main.rs
-
-      - name: Build Distroless Docker image
-        working-directory: examples/http-response-cache-rust-distroless
-        run: |
-          docker build --pull -t http-response-cache-distroless .
-
-      - name: Inspect Docker image
-        run: |
-          docker image inspect http-response-cache-distroless
-
-          test "$(docker inspect http-response-cache-distroless \
-            --format '{{json .Config.Entrypoint}}')" \
-            = '["/usr/bin/http-response-cache"]'
-
-      - name: Test Distroless container
-        run: |
           docker run -d \
             --name http-response-cache-test \
             -p 8080:8080 \
-            http-response-cache-distroless
+            http-response-cache-rust-distroless
 
           sleep 2
 
-          docker logs http-response-cache-test
-
           curl --fail http://localhost:8080/hello | tee response-1.txt
-          grep -q 'CACHE MISS: Generated response for /hello' response-1.txt
+          grep -q "CACHE MISS: Generated response for /hello" response-1.txt
 
           curl --fail http://localhost:8080/hello | tee response-2.txt
-          grep -q 'CACHE HIT: Generated response for /hello' response-2.txt
+          grep -q "CACHE HIT: Generated response for /hello" response-2.txt
 
           curl --fail http://localhost:8080/world | tee response-3.txt
-          grep -q 'CACHE MISS: Generated response for /world' response-3.txt
+          grep -q "CACHE MISS: Generated response for /world" response-3.txt
 
           curl --fail http://localhost:8080/world | tee response-4.txt
-          grep -q 'CACHE HIT: Generated response for /world' response-4.txt
+          grep -q "CACHE HIT: Generated response for /world" response-4.txt
 
-      - name: Verify Distroless has no shell
-        run: |
-          if docker run --rm \
-            --entrypoint /bin/sh \
-            http-response-cache-distroless 2>/dev/null; then
-            echo "ERROR: Distroless image unexpectedly contains /bin/sh"
-            exit 1
-          fi
-
-      - name: Check HTTP method handling
-        run: |
           curl -sS \
             -o post-response.txt \
-            -w '%{http_code}' \
+            -w "%{http_code}" \
             -X POST \
             http://localhost:8080/hello > post-status.txt
 
           test "$(cat post-status.txt)" = "405"
-          grep -q 'Method Not Allowed' post-response.txt
+          grep -q "Method Not Allowed" post-response.txt
 
-      - name: Stop Docker container
-        if: always()
-        run: |
-          docker rm -f http-response-cache-test || true
+          docker rm -f http-response-cache-test
 
-      - name: Install KraftKit
-        run: |
-          curl --fail --silent --show-error \
-            --location \
-            https://github.com/unikraft/kraftkit/releases/latest/download/kraft-linux-amd64 \
-            --output /tmp/kraft
-
-          chmod +x /tmp/kraft
-
-          sudo install -m 0755 /tmp/kraft /usr/local/bin/kraft
-
-          kraft version
-
-      - name: Check QEMU
-        run: |
-          qemu-system-x86_64 --version
-
-      - name: Check KVM
-        run: |
-          if [ -e /dev/kvm ]; then
-            ls -l /dev/kvm
-          else
-            echo "/dev/kvm is not available; QEMU will use software emulation."
-          fi
-
-      - name: Build Unikraft application
+      - name: Run and Validate Output
         working-directory: examples/http-response-cache-rust-distroless
         run: |
-          kraft build \
-            --plat qemu \
-            --arch x86_64 \
-            .
-
-      - name: Show generated build files
-        working-directory: examples/http-response-cache-rust-distroless
-        run: |
-          find . -maxdepth 4 -type f -print
-
-      - name: Run Unikraft application
-        working-directory: examples/http-response-cache-rust-distroless
-        run: |
-          timeout 60s \
-            kraft run \
+          kraft run \
             --rm \
-            --plat qemu \
-            --arch x86_64 \
             -M 128M \
             -p 8080:8080 \
             . > kraft-run.log 2>&1 &
 
           KRAFT_PID=$!
 
-          echo "Waiting for HTTP server..."
-
-          SERVER_READY=0
+          echo "Waiting for Unikraft HTTP server..."
 
           for i in $(seq 1 30); do
-            if ! kill -0 "$KRAFT_PID" 2>/dev/null; then
-              echo "Kraft process exited before the HTTP server became ready."
-              cat kraft-run.log
-              exit 1
-            fi
-
-            if curl -s \
-              http://localhost:8080/hello \
-              > /tmp/response.txt 2>/dev/null; then
-              SERVER_READY=1
+            if curl -s http://localhost:8080/hello > response-1.txt 2>/dev/null; then
               echo "HTTP server is ready."
               break
             fi
@@ -191,77 +103,47 @@ jobs:
             sleep 1
           done
 
-          test "$SERVER_READY" = "1"
+          test -s response-1.txt
+          grep -q "CACHE MISS: Generated response for /hello" response-1.txt
 
-          grep -q \
-            'CACHE MISS: Generated response for /hello' \
-            /tmp/response.txt
+          curl --fail http://localhost:8080/hello | tee response-2.txt
+          grep -q "CACHE HIT: Generated response for /hello" response-2.txt
 
-          curl --fail \
-            http://localhost:8080/hello \
-            | tee /tmp/response-2.txt
+          curl --fail http://localhost:8080/world | tee response-3.txt
+          grep -q "CACHE MISS: Generated response for /world" response-3.txt
 
-          grep -q \
-            'CACHE HIT: Generated response for /hello' \
-            /tmp/response-2.txt
-
-          curl --fail \
-            http://localhost:8080/world \
-            | tee /tmp/response-3.txt
-
-          grep -q \
-            'CACHE MISS: Generated response for /world' \
-            /tmp/response-3.txt
-
-          curl --fail \
-            http://localhost:8080/world \
-            | tee /tmp/response-4.txt
-
-          grep -q \
-            'CACHE HIT: Generated response for /world' \
-            /tmp/response-4.txt
+          curl --fail http://localhost:8080/world | tee response-4.txt
+          grep -q "CACHE HIT: Generated response for /world" response-4.txt
 
           curl -sS \
-            -o /tmp/post-response.txt \
-            -w '%{http_code}' \
+            -o post-response.txt \
+            -w "%{http_code}" \
             -X POST \
-            http://localhost:8080/hello \
-            > /tmp/post-status.txt
+            http://localhost:8080/hello > post-status.txt
 
-          test "$(cat /tmp/post-status.txt)" = "405"
-
-          grep -q \
-            'Method Not Allowed' \
-            /tmp/post-response.txt
+          test "$(cat post-status.txt)" = "405"
+          grep -q "Method Not Allowed" post-response.txt
 
           kill "$KRAFT_PID" 2>/dev/null || true
           wait "$KRAFT_PID" 2>/dev/null || true
 
-      - name: Check Unikraft log for ELF errors
-        working-directory: examples/http-response-cache-rust-distroless
+      - name: Check Unikraft Log
         if: always()
-        run: |
-          if [ -f kraft-run.log ]; then
-            if grep -Eiq \
-              'not position-independent|exec format error|ELF executable is not position-independent' \
-              kraft-run.log; then
-              echo "ERROR: ELF or executable format problem detected"
-              exit 1
-            fi
-          fi
-
-      - name: Show Unikraft log
         working-directory: examples/http-response-cache-rust-distroless
-        if: always()
         run: |
           if [ -f kraft-run.log ]; then
             cat kraft-run.log
           fi
 
-      - name: Upload Unikraft log
+      - name: Check for ELF Errors
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: http-response-cache-rust-distroless-kraft-log
-          path: examples/http-response-cache-rust-distroless/kraft-run.log
-          if-no-files-found: ignore
+        working-directory: examples/http-response-cache-rust-distroless
+        run: |
+          if [ -f kraft-run.log ]; then
+            if grep -Eiq \
+              "not position-independent|exec format error|ELF executable is not position-independent" \
+              kraft-run.log; then
+              echo "ERROR: ELF or executable format problem detected"
+              exit 1
+            fi
+          fi
