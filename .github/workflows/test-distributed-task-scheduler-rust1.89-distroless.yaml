@@ -1,0 +1,290 @@
+name: Test distributed-task-scheduler-rust1.89-distroless
+
+on:
+  push:
+    branches:
+      - test/distributed-task-scheduler-rust1.89-distroless
+  pull_request:
+    paths:
+      - "examples/distributed-task-scheduler-rust1.89-distroless/**"
+      - ".github/workflows/test-distributed-task-scheduler-rust1.89-distroless.yaml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup KraftKit
+        uses: unikraft/kraftkit@stable
+
+      - name: Build Unikraft image
+        working-directory: examples/distributed-task-scheduler-rust1.89-distroless
+        run: |
+          kraft build --plat qemu --arch x86_64 .
+
+      - name: Check build output
+        working-directory: examples/distributed-task-scheduler-rust1.89-distroless
+        run: |
+          test -f .unikraft/build/libvirt-qemu-x86_64.dbg || \
+          test -f .unikraft/build/unikraft-qemu-x86_64
+          du -sh .unikraft/build || true
+
+      - name: Build Docker image
+        working-directory: examples/distributed-task-scheduler-rust1.89-distroless
+        run: |
+          docker build -t distributed-task-scheduler-rust1.89-distroless .
+
+      - name: Create Docker network
+        run: |
+          docker network create scheduler-net
+
+      - name: Start coordinator
+        run: |
+          docker run -d \
+            --name scheduler \
+            --network scheduler-net \
+            -p 8080:8080 \
+            -e SCHEDULER_ROLE=coordinator \
+            -e SCHEDULER_PORT=8080 \
+            distributed-task-scheduler-rust1.89-distroless
+
+      - name: Start worker 1
+        run: |
+          docker run -d \
+            --name worker-1 \
+            --network scheduler-net \
+            -e SCHEDULER_ROLE=worker \
+            -e WORKER_ID=worker-1 \
+            -e WORKER_PORT=9001 \
+            -e WORKER_ADDRESS=worker-1:9001 \
+            -e COORDINATOR_ADDRESS=scheduler:8080 \
+            distributed-task-scheduler-rust1.89-distroless
+
+      - name: Start worker 2
+        run: |
+          docker run -d \
+            --name worker-2 \
+            --network scheduler-net \
+            -e SCHEDULER_ROLE=worker \
+            -e WORKER_ID=worker-2 \
+            -e WORKER_PORT=9002 \
+            -e WORKER_ADDRESS=worker-2:9002 \
+            -e COORDINATOR_ADDRESS=scheduler:8080 \
+            distributed-task-scheduler-rust1.89-distroless
+
+      - name: Wait for workers
+        run: |
+          for i in {1..20}; do
+            workers=$(curl -fsS http://localhost:8080/workers || true)
+            echo "$workers"
+
+            echo "$workers" | grep -q "worker-1" &&
+            echo "$workers" | grep -q "worker-2" &&
+            break
+
+            sleep 1
+          done
+
+          echo "$workers" | grep -q "worker-1"
+          echo "$workers" | grep -q "worker-2"
+
+      - name: Test health endpoint
+        run: |
+          curl -fsS http://localhost:8080/health | grep -q "coordinator: healthy"
+
+      - name: Test echo task
+        run: |
+          response=$(curl -fsS -X POST \
+            -d "type=echo&value=hello-unikraft" \
+            http://localhost:8080/tasks)
+
+          echo "$response"
+          task_id=$(echo "$response" | sed -n 's/.*task=\([0-9][0-9]*\).*/\1/p')
+          test -n "$task_id"
+
+          for i in {1..20}; do
+            result=$(curl -fsS "http://localhost:8080/tasks/$task_id")
+            echo "$result"
+
+            echo "$result" | grep -q "status=completed" && break
+            sleep 1
+          done
+
+          echo "$result" | grep -q "status=completed"
+          echo "$result" | grep -q "result=hello-unikraft"
+
+      - name: Test add task
+        run: |
+          response=$(curl -fsS -X POST \
+            -d "type=add&value=10,32" \
+            http://localhost:8080/tasks)
+
+          echo "$response"
+          task_id=$(echo "$response" | sed -n 's/.*task=\([0-9][0-9]*\).*/\1/p')
+          test -n "$task_id"
+
+          for i in {1..20}; do
+            result=$(curl -fsS "http://localhost:8080/tasks/$task_id")
+            echo "$result"
+
+            echo "$result" | grep -q "status=completed" && break
+            sleep 1
+          done
+
+          echo "$result" | grep -q "status=completed"
+          echo "$result" | grep -q "result=42"
+
+      - name: Test fib task
+        run: |
+          response=$(curl -fsS -X POST \
+            -d "type=fib&value=20" \
+            http://localhost:8080/tasks)
+
+          echo "$response"
+          task_id=$(echo "$response" | sed -n 's/.*task=\([0-9][0-9]*\).*/\1/p')
+          test -n "$task_id"
+
+          for i in {1..20}; do
+            result=$(curl -fsS "http://localhost:8080/tasks/$task_id")
+            echo "$result"
+
+            echo "$result" | grep -q "status=completed" && break
+            sleep 1
+          done
+
+          echo "$result" | grep -q "status=completed"
+          echo "$result" | grep -q "result=6765"
+
+      - name: Test concurrent tasks
+        run: |
+          response1=$(curl -fsS -X POST \
+            -d "type=sleep&value=5" \
+            http://localhost:8080/tasks)
+
+          response2=$(curl -fsS -X POST \
+            -d "type=sleep&value=5" \
+            http://localhost:8080/tasks)
+
+          echo "$response1"
+          echo "$response2"
+
+          task1=$(echo "$response1" | sed -n 's/.*task=\([0-9][0-9]*\).*/\1/p')
+          task2=$(echo "$response2" | sed -n 's/.*task=\([0-9][0-9]*\).*/\1/p')
+
+          test -n "$task1"
+          test -n "$task2"
+
+          sleep 2
+
+          result1=$(curl -fsS "http://localhost:8080/tasks/$task1")
+          result2=$(curl -fsS "http://localhost:8080/tasks/$task2")
+
+          echo "$result1"
+          echo "$result2"
+
+          echo "$result1" | grep -Eq "status=(running|completed)"
+          echo "$result2" | grep -Eq "status=(running|completed)"
+
+          for i in {1..15}; do
+            result1=$(curl -fsS "http://localhost:8080/tasks/$task1")
+            result2=$(curl -fsS "http://localhost:8080/tasks/$task2")
+
+            echo "$result1"
+            echo "$result2"
+
+            echo "$result1" | grep -q "status=completed" &&
+            echo "$result2" | grep -q "status=completed" &&
+            break
+
+            sleep 1
+          done
+
+          echo "$result1" | grep -q "status=completed"
+          echo "$result2" | grep -q "status=completed"
+
+      - name: Test invalid task
+        run: |
+          response=$(curl -fsS -X POST \
+            -d "type=add&value=abc,10" \
+            http://localhost:8080/tasks)
+
+          echo "$response"
+          task_id=$(echo "$response" | sed -n 's/.*task=\([0-9][0-9]*\).*/\1/p')
+          test -n "$task_id"
+
+          for i in {1..20}; do
+            result=$(curl -fsS "http://localhost:8080/tasks/$task_id")
+            echo "$result"
+
+            echo "$result" | grep -q "status=failed" && break
+            sleep 1
+          done
+
+          echo "$result" | grep -q "status=failed"
+          echo "$result" | grep -q "invalid number"
+
+      - name: Test worker failure and task recovery
+        run: |
+          response=$(curl -fsS -X POST \
+            -d "type=sleep&value=20" \
+            http://localhost:8080/tasks)
+
+          echo "$response"
+          task_id=$(echo "$response" | sed -n 's/.*task=\([0-9][0-9]*\).*/\1/p')
+          test -n "$task_id"
+
+          worker=""
+
+          for i in {1..10}; do
+            result=$(curl -fsS "http://localhost:8080/tasks/$task_id")
+            echo "$result"
+
+            worker=$(echo "$result" | sed -n 's/.*worker=\([^ ]*\).*/\1/p')
+
+            if [ "$worker" = "worker-1" ] || [ "$worker" = "worker-2" ]; then
+              break
+            fi
+
+            sleep 1
+          done
+
+          test "$worker" = "worker-1" || test "$worker" = "worker-2"
+
+          echo "Task $task_id assigned to $worker"
+
+          docker stop "$worker"
+
+          sleep 8
+
+          result=$(curl -fsS "http://localhost:8080/tasks/$task_id")
+          echo "$result"
+
+          echo "$result" | grep -q "attempts=2"
+          echo "$result" | grep -q "worker=worker-"
+
+          docker start "$worker"
+
+          for i in {1..25}; do
+            result=$(curl -fsS "http://localhost:8080/tasks/$task_id")
+            echo "$result"
+
+            echo "$result" | grep -q "status=completed" && break
+            sleep 1
+          done
+
+          echo "$result" | grep -q "status=completed"
+          echo "$result" | grep -q "result=slept for 20 seconds"
+          echo "$result" | grep -q "attempts=2"
+
+      - name: Show final workers
+        run: |
+          curl -fsS http://localhost:8080/workers
+
+      - name: Cleanup
+        if: always()
+        run: |
+          docker rm -f scheduler worker-1 worker-2 2>/dev/null || true
+          docker network rm scheduler-net 2>/dev/null || true
