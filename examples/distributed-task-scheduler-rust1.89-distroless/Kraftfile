@@ -1,0 +1,13 @@
+spec: v0.6
+
+name: distributed-task-scheduler
+
+runtime: base:latest
+
+rootfs: ./Dockerfile
+
+env:
+  SCHEDULER_ROLE: coordinator
+  SCHEDULER_PORT: "8080"
+
+cmd: ["/usr/bin/task-scheduler"]
