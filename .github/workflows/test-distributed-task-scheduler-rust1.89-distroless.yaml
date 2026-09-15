@@ -22,11 +22,17 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install KraftKit
+        working-directory: .
         run: |
-          brew install unikraft/tap/kraft
+          set -e
 
-      - name: Check KraftKit
-        run: |
+          VERSION="v0.12.15-43-g372a73d8"
+          URL="https://github.com/unikraft/kraftkit/releases/download/${VERSION}/kraft-linux-amd64"
+
+          curl -fsSL "$URL" -o kraft
+          chmod +x kraft
+          sudo mv kraft /usr/local/bin/kraft
+
           kraft version
 
       - name: Build Unikraft image
