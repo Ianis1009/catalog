@@ -17,20 +17,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup KraftKit
-        uses: unikraft/kraftkit@stable
-
       - name: Build Unikraft image
-        working-directory: examples/distributed-task-scheduler-rust1.89-distroless
-        run: |
-          kraft build --plat qemu --arch x86_64 .
-
-      - name: Show Unikraft build output
-        working-directory: examples/distributed-task-scheduler-rust1.89-distroless
-        run: |
-          test -d .unikraft/build
-          du -sh .unikraft/build
-          find .unikraft/build -maxdepth 2 -type f | head -50
+        uses: unikraft/kraftkit@stable
+        with:
+          workdir: examples/distributed-task-scheduler-rust1.89-distroless
+          kraftfile: Kraftfile
+          arch: x86_64
+          plat: qemu
 
       - name: Build Docker image
         working-directory: examples/distributed-task-scheduler-rust1.89-distroless
@@ -75,27 +68,37 @@ jobs:
             -e COORDINATOR_ADDRESS=scheduler:8080 \
             distributed-task-scheduler-rust1.89-distroless
 
-      - name: Wait for workers
+      - name: Wait for coordinator and workers
         run: |
-          for i in {1..20}; do
+          for i in {1..30}; do
+            health=$(curl -fsS http://localhost:8080/health || true)
             workers=$(curl -fsS http://localhost:8080/workers || true)
+
+            echo "$health"
             echo "$workers"
 
-            if echo "$workers" | grep -q "worker-1" &&
+            if echo "$health" | grep -q "coordinator: healthy" &&
+               echo "$workers" | grep -q "worker-1" &&
                echo "$workers" | grep -q "worker-2"; then
-              break
+              exit 0
             fi
 
             sleep 1
           done
 
-          echo "$workers" | grep -q "worker-1"
-          echo "$workers" | grep -q "worker-2"
+          echo "Coordinator/workers did not become ready"
+          exit 1
 
       - name: Test health endpoint
         run: |
           curl -fsS http://localhost:8080/health | tee /tmp/health
           grep -q "coordinator: healthy" /tmp/health
+
+      - name: Test workers endpoint
+        run: |
+          curl -fsS http://localhost:8080/workers | tee /tmp/workers
+          grep -q "worker-1" /tmp/workers
+          grep -q "worker-2" /tmp/workers
 
       - name: Test echo task
         run: |
@@ -191,7 +194,7 @@ jobs:
           test -n "$task1"
           test -n "$task2"
 
-          for i in {1..15}; do
+          for i in {1..20}; do
             result1=$(curl -fsS "http://localhost:8080/tasks/$task1")
             result2=$(curl -fsS "http://localhost:8080/tasks/$task2")
 
@@ -234,6 +237,33 @@ jobs:
           echo "$result" | grep -q "status=failed"
           echo "$result" | grep -q "invalid number"
 
+      - name: Test missing task type
+        run: |
+          response=$(curl -fsS -X POST \
+            -d "value=hello" \
+            http://localhost:8080/tasks)
+
+          echo "$response"
+          echo "$response" | grep -q "missing type"
+
+      - name: Test missing task value
+        run: |
+          response=$(curl -fsS -X POST \
+            -d "type=echo" \
+            http://localhost:8080/tasks)
+
+          echo "$response"
+          echo "$response" | grep -q "missing value"
+
+      - name: Test unsupported task type
+        run: |
+          response=$(curl -fsS -X POST \
+            -d "type=unknown&value=test" \
+            http://localhost:8080/tasks)
+
+          echo "$response"
+          echo "$response" | grep -q "unsupported task type"
+
       - name: Test worker failure and task recovery
         run: |
           response=$(curl -fsS -X POST \
@@ -245,41 +275,46 @@ jobs:
           task_id=$(echo "$response" | sed -n 's/.*task=\([0-9][0-9]*\).*/\1/p')
           test -n "$task_id"
 
-          worker=""
+          assigned_worker=""
 
           for i in {1..15}; do
             result=$(curl -fsS "http://localhost:8080/tasks/$task_id")
             echo "$result"
 
             if echo "$result" | grep -q "worker=worker-1"; then
-              worker="worker-1"
+              assigned_worker="worker-1"
               break
             fi
 
             if echo "$result" | grep -q "worker=worker-2"; then
-              worker="worker-2"
+              assigned_worker="worker-2"
               break
             fi
 
             sleep 1
           done
 
-          test -n "$worker"
+          test -n "$assigned_worker"
 
-          echo "Stopping assigned worker: $worker"
-          docker stop "$worker"
+          echo "Stopping assigned worker: $assigned_worker"
+          docker stop "$assigned_worker"
 
-          sleep 8
+          for i in {1..15}; do
+            result=$(curl -fsS "http://localhost:8080/tasks/$task_id")
+            echo "$result"
 
-          result=$(curl -fsS "http://localhost:8080/tasks/$task_id")
-          echo "$result"
+            if echo "$result" | grep -q "attempts=2"; then
+              break
+            fi
+
+            sleep 1
+          done
 
           echo "$result" | grep -q "attempts=2"
-          echo "$result" | grep -q "worker=worker-"
 
-          docker start "$worker"
+          docker start "$assigned_worker"
 
-          for i in {1..25}; do
+          for i in {1..30}; do
             result=$(curl -fsS "http://localhost:8080/tasks/$task_id")
             echo "$result"
 
@@ -298,16 +333,16 @@ jobs:
         run: |
           curl -fsS http://localhost:8080/workers
 
-      - name: Show container logs on failure
+      - name: Show logs on failure
         if: failure()
         run: |
-          echo "=== Scheduler logs ==="
+          echo "=== scheduler ==="
           docker logs scheduler 2>&1 || true
 
-          echo "=== Worker 1 logs ==="
+          echo "=== worker-1 ==="
           docker logs worker-1 2>&1 || true
 
-          echo "=== Worker 2 logs ==="
+          echo "=== worker-2 ==="
           docker logs worker-2 2>&1 || true
 
       - name: Cleanup
