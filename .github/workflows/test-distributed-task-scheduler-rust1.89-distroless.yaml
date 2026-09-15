@@ -1,16 +1,15 @@
 name: Test Distributed Task Scheduler Rust 1.89 Distroless
 
 on:
+  workflow_dispatch:
   push:
-    branches:
-      - "test/distributed-task-scheduler-rust1.89-distroless-workflow"
     paths:
       - "examples/distributed-task-scheduler-rust1.89-distroless/**"
-      - ".github/workflows/test-distributed-task-scheduler-rust1.89-distroless.yml"
+      - ".github/workflows/**"
   pull_request:
     paths:
       - "examples/distributed-task-scheduler-rust1.89-distroless/**"
-      - ".github/workflows/test-distributed-task-scheduler-rust1.89-distroless.yml"
+      - ".github/workflows/**"
 
 jobs:
   test:
@@ -27,7 +26,7 @@ jobs:
         working-directory: examples/distributed-task-scheduler-rust1.89-distroless
         run: kraft build --plat qemu --arch x86_64 .
 
-      - name: Measure RootFS Size
+      - name: Measure RootFS
         working-directory: examples/distributed-task-scheduler-rust1.89-distroless
         run: |
           du -sh .unikraft/build/ || true
@@ -56,12 +55,14 @@ jobs:
             -e SCHEDULER_PORT=8080 \
             || true
 
-      - name: Build Docker image
+      - name: Build Docker Image
         working-directory: examples/distributed-task-scheduler-rust1.89-distroless
         run: docker build -t distributed-task-scheduler .
 
-      - name: Test distributed scheduler
+      - name: Test Scheduler
         run: |
+          set -e
+
           docker network create scheduler-net
 
           docker run -d \
