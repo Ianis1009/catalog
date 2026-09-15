@@ -13,28 +13,44 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
+    defaults:
+      run:
+        working-directory: examples/distributed-task-scheduler-rust1.89-distroless
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Install KraftKit
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://get.kraftkit.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Check KraftKit
+        run: |
+          kraft version
+
       - name: Build Unikraft image
-        uses: unikraft/kraftkit@stable
-        with:
-          workdir: examples/distributed-task-scheduler-rust1.89-distroless
-          kraftfile: Kraftfile
-          arch: x86_64
-          plat: qemu
+        run: |
+          kraft build --plat qemu --arch x86_64 .
+
+      - name: Show Unikraft build output
+        run: |
+          test -d .unikraft/build
+          du -sh .unikraft/build
+          find .unikraft/build -maxdepth 2 -type f | head -50
 
       - name: Build Docker image
-        working-directory: examples/distributed-task-scheduler-rust1.89-distroless
         run: |
           docker build -t distributed-task-scheduler-rust1.89-distroless .
 
       - name: Create Docker network
+        working-directory: .
         run: |
           docker network create scheduler-net
 
       - name: Start coordinator
+        working-directory: .
         run: |
           docker run -d \
             --name scheduler \
@@ -45,6 +61,7 @@ jobs:
             distributed-task-scheduler-rust1.89-distroless
 
       - name: Start worker 1
+        working-directory: .
         run: |
           docker run -d \
             --name worker-1 \
@@ -57,6 +74,7 @@ jobs:
             distributed-task-scheduler-rust1.89-distroless
 
       - name: Start worker 2
+        working-directory: .
         run: |
           docker run -d \
             --name worker-2 \
@@ -69,6 +87,7 @@ jobs:
             distributed-task-scheduler-rust1.89-distroless
 
       - name: Wait for coordinator and workers
+        working-directory: .
         run: |
           for i in {1..30}; do
             health=$(curl -fsS http://localhost:8080/health || true)
@@ -90,17 +109,20 @@ jobs:
           exit 1
 
       - name: Test health endpoint
+        working-directory: .
         run: |
           curl -fsS http://localhost:8080/health | tee /tmp/health
           grep -q "coordinator: healthy" /tmp/health
 
       - name: Test workers endpoint
+        working-directory: .
         run: |
           curl -fsS http://localhost:8080/workers | tee /tmp/workers
           grep -q "worker-1" /tmp/workers
           grep -q "worker-2" /tmp/workers
 
       - name: Test echo task
+        working-directory: .
         run: |
           response=$(curl -fsS -X POST \
             -d "type=echo&value=hello-unikraft" \
@@ -126,6 +148,7 @@ jobs:
           echo "$result" | grep -q "result=hello-unikraft"
 
       - name: Test add task
+        working-directory: .
         run: |
           response=$(curl -fsS -X POST \
             -d "type=add&value=10,32" \
@@ -151,6 +174,7 @@ jobs:
           echo "$result" | grep -q "result=42"
 
       - name: Test fib task
+        working-directory: .
         run: |
           response=$(curl -fsS -X POST \
             -d "type=fib&value=20" \
@@ -176,6 +200,7 @@ jobs:
           echo "$result" | grep -q "result=6765"
 
       - name: Test concurrent tasks
+        working-directory: .
         run: |
           response1=$(curl -fsS -X POST \
             -d "type=sleep&value=5" \
@@ -213,6 +238,7 @@ jobs:
           echo "$result2" | grep -q "status=completed"
 
       - name: Test invalid task
+        working-directory: .
         run: |
           response=$(curl -fsS -X POST \
             -d "type=add&value=abc,10" \
@@ -238,6 +264,7 @@ jobs:
           echo "$result" | grep -q "invalid number"
 
       - name: Test missing task type
+        working-directory: .
         run: |
           response=$(curl -fsS -X POST \
             -d "value=hello" \
@@ -247,6 +274,7 @@ jobs:
           echo "$response" | grep -q "missing type"
 
       - name: Test missing task value
+        working-directory: .
         run: |
           response=$(curl -fsS -X POST \
             -d "type=echo" \
@@ -256,6 +284,7 @@ jobs:
           echo "$response" | grep -q "missing value"
 
       - name: Test unsupported task type
+        working-directory: .
         run: |
           response=$(curl -fsS -X POST \
             -d "type=unknown&value=test" \
@@ -265,6 +294,7 @@ jobs:
           echo "$response" | grep -q "unsupported task type"
 
       - name: Test worker failure and task recovery
+        working-directory: .
         run: |
           response=$(curl -fsS -X POST \
             -d "type=sleep&value=20" \
@@ -330,11 +360,13 @@ jobs:
           echo "$result" | grep -q "attempts=2"
 
       - name: Show final workers
+        working-directory: .
         run: |
           curl -fsS http://localhost:8080/workers
 
       - name: Show logs on failure
         if: failure()
+        working-directory: .
         run: |
           echo "=== scheduler ==="
           docker logs scheduler 2>&1 || true
@@ -347,6 +379,7 @@ jobs:
 
       - name: Cleanup
         if: always()
+        working-directory: .
         run: |
           docker rm -f scheduler worker-1 worker-2 2>/dev/null || true
           docker network rm scheduler-net 2>/dev/null || true
