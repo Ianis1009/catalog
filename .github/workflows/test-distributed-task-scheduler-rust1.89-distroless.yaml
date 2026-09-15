@@ -23,15 +23,15 @@ jobs:
 
       - name: Install KraftKit
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://get.kraftkit.sh | sudo sh
+          brew install unikraft/tap/kraft
 
       - name: Check KraftKit
         run: |
-          sudo kraft version
+          kraft version
 
       - name: Build Unikraft image
         run: |
-          sudo kraft build --plat qemu --arch x86_64 .
+          kraft build --plat qemu --arch x86_64 .
 
       - name: Show Unikraft build output
         run: |
@@ -110,15 +110,17 @@ jobs:
       - name: Test health endpoint
         working-directory: .
         run: |
-          curl -fsS http://localhost:8080/health | tee /tmp/health
-          grep -q "coordinator: healthy" /tmp/health
+          response=$(curl -fsS http://localhost:8080/health)
+          echo "$response"
+          echo "$response" | grep -q "coordinator: healthy"
 
       - name: Test workers endpoint
         working-directory: .
         run: |
-          curl -fsS http://localhost:8080/workers | tee /tmp/workers
-          grep -q "worker-1" /tmp/workers
-          grep -q "worker-2" /tmp/workers
+          response=$(curl -fsS http://localhost:8080/workers)
+          echo "$response"
+          echo "$response" | grep -q "worker-1"
+          echo "$response" | grep -q "worker-2"
 
       - name: Test echo task
         working-directory: .
