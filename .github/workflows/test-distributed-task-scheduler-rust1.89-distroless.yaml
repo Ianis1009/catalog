@@ -23,16 +23,15 @@ jobs:
 
       - name: Install KraftKit
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://get.kraftkit.sh | sh
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          curl --proto '=https' --tlsv1.2 -sSf https://get.kraftkit.sh | sudo sh
 
       - name: Check KraftKit
         run: |
-          kraft version
+          sudo kraft version
 
       - name: Build Unikraft image
         run: |
-          kraft build --plat qemu --arch x86_64 .
+          sudo kraft build --plat qemu --arch x86_64 .
 
       - name: Show Unikraft build output
         run: |
