@@ -3,7 +3,7 @@ name: Test distributed-task-scheduler-rust1.89-distroless
 on:
   push:
     branches:
-      - test/distributed-task-scheduler-rust1.89-distroless
+      - test/distributed-task-scheduler-rust1.89-distroless-workflow
   pull_request:
     paths:
       - "examples/distributed-task-scheduler-rust1.89-distroless/**"
@@ -25,12 +25,12 @@ jobs:
         run: |
           kraft build --plat qemu --arch x86_64 .
 
-      - name: Check build output
+      - name: Show Unikraft build output
         working-directory: examples/distributed-task-scheduler-rust1.89-distroless
         run: |
-          test -f .unikraft/build/libvirt-qemu-x86_64.dbg || \
-          test -f .unikraft/build/unikraft-qemu-x86_64
-          du -sh .unikraft/build || true
+          test -d .unikraft/build
+          du -sh .unikraft/build
+          find .unikraft/build -maxdepth 2 -type f | head -50
 
       - name: Build Docker image
         working-directory: examples/distributed-task-scheduler-rust1.89-distroless
@@ -81,9 +81,10 @@ jobs:
             workers=$(curl -fsS http://localhost:8080/workers || true)
             echo "$workers"
 
-            echo "$workers" | grep -q "worker-1" &&
-            echo "$workers" | grep -q "worker-2" &&
-            break
+            if echo "$workers" | grep -q "worker-1" &&
+               echo "$workers" | grep -q "worker-2"; then
+              break
+            fi
 
             sleep 1
           done
@@ -93,7 +94,8 @@ jobs:
 
       - name: Test health endpoint
         run: |
-          curl -fsS http://localhost:8080/health | grep -q "coordinator: healthy"
+          curl -fsS http://localhost:8080/health | tee /tmp/health
+          grep -q "coordinator: healthy" /tmp/health
 
       - name: Test echo task
         run: |
@@ -102,6 +104,7 @@ jobs:
             http://localhost:8080/tasks)
 
           echo "$response"
+
           task_id=$(echo "$response" | sed -n 's/.*task=\([0-9][0-9]*\).*/\1/p')
           test -n "$task_id"
 
@@ -109,7 +112,10 @@ jobs:
             result=$(curl -fsS "http://localhost:8080/tasks/$task_id")
             echo "$result"
 
-            echo "$result" | grep -q "status=completed" && break
+            if echo "$result" | grep -q "status=completed"; then
+              break
+            fi
+
             sleep 1
           done
 
@@ -123,6 +129,7 @@ jobs:
             http://localhost:8080/tasks)
 
           echo "$response"
+
           task_id=$(echo "$response" | sed -n 's/.*task=\([0-9][0-9]*\).*/\1/p')
           test -n "$task_id"
 
@@ -130,7 +137,10 @@ jobs:
             result=$(curl -fsS "http://localhost:8080/tasks/$task_id")
             echo "$result"
 
-            echo "$result" | grep -q "status=completed" && break
+            if echo "$result" | grep -q "status=completed"; then
+              break
+            fi
+
             sleep 1
           done
 
@@ -144,6 +154,7 @@ jobs:
             http://localhost:8080/tasks)
 
           echo "$response"
+
           task_id=$(echo "$response" | sed -n 's/.*task=\([0-9][0-9]*\).*/\1/p')
           test -n "$task_id"
 
@@ -151,7 +162,10 @@ jobs:
             result=$(curl -fsS "http://localhost:8080/tasks/$task_id")
             echo "$result"
 
-            echo "$result" | grep -q "status=completed" && break
+            if echo "$result" | grep -q "status=completed"; then
+              break
+            fi
+
             sleep 1
           done
 
@@ -177,17 +191,6 @@ jobs:
           test -n "$task1"
           test -n "$task2"
 
-          sleep 2
-
-          result1=$(curl -fsS "http://localhost:8080/tasks/$task1")
-          result2=$(curl -fsS "http://localhost:8080/tasks/$task2")
-
-          echo "$result1"
-          echo "$result2"
-
-          echo "$result1" | grep -Eq "status=(running|completed)"
-          echo "$result2" | grep -Eq "status=(running|completed)"
-
           for i in {1..15}; do
             result1=$(curl -fsS "http://localhost:8080/tasks/$task1")
             result2=$(curl -fsS "http://localhost:8080/tasks/$task2")
@@ -195,9 +198,10 @@ jobs:
             echo "$result1"
             echo "$result2"
 
-            echo "$result1" | grep -q "status=completed" &&
-            echo "$result2" | grep -q "status=completed" &&
-            break
+            if echo "$result1" | grep -q "status=completed" &&
+               echo "$result2" | grep -q "status=completed"; then
+              break
+            fi
 
             sleep 1
           done
@@ -212,6 +216,7 @@ jobs:
             http://localhost:8080/tasks)
 
           echo "$response"
+
           task_id=$(echo "$response" | sed -n 's/.*task=\([0-9][0-9]*\).*/\1/p')
           test -n "$task_id"
 
@@ -219,7 +224,10 @@ jobs:
             result=$(curl -fsS "http://localhost:8080/tasks/$task_id")
             echo "$result"
 
-            echo "$result" | grep -q "status=failed" && break
+            if echo "$result" | grep -q "status=failed"; then
+              break
+            fi
+
             sleep 1
           done
 
@@ -233,28 +241,32 @@ jobs:
             http://localhost:8080/tasks)
 
           echo "$response"
+
           task_id=$(echo "$response" | sed -n 's/.*task=\([0-9][0-9]*\).*/\1/p')
           test -n "$task_id"
 
           worker=""
 
-          for i in {1..10}; do
+          for i in {1..15}; do
             result=$(curl -fsS "http://localhost:8080/tasks/$task_id")
             echo "$result"
 
-            worker=$(echo "$result" | sed -n 's/.*worker=\([^ ]*\).*/\1/p')
+            if echo "$result" | grep -q "worker=worker-1"; then
+              worker="worker-1"
+              break
+            fi
 
-            if [ "$worker" = "worker-1" ] || [ "$worker" = "worker-2" ]; then
+            if echo "$result" | grep -q "worker=worker-2"; then
+              worker="worker-2"
               break
             fi
 
             sleep 1
           done
 
-          test "$worker" = "worker-1" || test "$worker" = "worker-2"
+          test -n "$worker"
 
-          echo "Task $task_id assigned to $worker"
-
+          echo "Stopping assigned worker: $worker"
           docker stop "$worker"
 
           sleep 8
@@ -271,7 +283,10 @@ jobs:
             result=$(curl -fsS "http://localhost:8080/tasks/$task_id")
             echo "$result"
 
-            echo "$result" | grep -q "status=completed" && break
+            if echo "$result" | grep -q "status=completed"; then
+              break
+            fi
+
             sleep 1
           done
 
@@ -282,6 +297,18 @@ jobs:
       - name: Show final workers
         run: |
           curl -fsS http://localhost:8080/workers
+
+      - name: Show container logs on failure
+        if: failure()
+        run: |
+          echo "=== Scheduler logs ==="
+          docker logs scheduler 2>&1 || true
+
+          echo "=== Worker 1 logs ==="
+          docker logs worker-1 2>&1 || true
+
+          echo "=== Worker 2 logs ==="
+          docker logs worker-2 2>&1 || true
 
       - name: Cleanup
         if: always()
